@@ -89,7 +89,7 @@ export async function run(ctx) {
         if (ch.guild_id !== room.guildId) {
           fail('頻道', `頻道 ${room.channelId} 不屬於 room.guildId ${room.guildId}（實際是 ${ch.guild_id ?? '無'}）`, true);
         } else if (THREAD_TYPES.has(ch.type)) {
-          add('WARN', '頻道', `#${ch.name ?? room.channelId} 是討論串，尚未支援討論串`);
+          fail('頻道', `#${ch.name ?? room.channelId} 是討論串，尚未支援討論串；room.json 的 channelId 請填一般文字頻道`, true);
         } else if (!TEXT_TYPES.has(ch.type)) {
           add('WARN', '頻道', `#${ch.name ?? room.channelId} 的類型是 ${ch.type}，不是一般文字頻道，可能無法使用`);
         } else {
@@ -101,6 +101,18 @@ export async function run(ctx) {
       await step('讀取訊息', async () => {
         await client.messages(room.channelId, { limit: 1 });
         add('OK', '讀取訊息', '有讀取訊息歷史的權限');
+      });
+
+      // 7a. 主導者 ID 存在，印出名稱讓人確認沒填錯
+      await step('主導者', async () => {
+        try {
+          const u = await client.user(room.moderatorUserId);
+          add('OK', '主導者', `${u.global_name || u.username}（${u.username}，id=${u.id}）`);
+        } catch (e) {
+          if (e instanceof DiscordError && e.status === 404) {
+            fail('主導者', `找不到使用者 ${room.moderatorUserId}：請檢查 room.json 的 moderatorUserId`, true);
+          } else throw e;
+        }
       });
 
       // 8. webhook

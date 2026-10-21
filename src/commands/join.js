@@ -1,7 +1,7 @@
 import { snowflakeNow } from '../discord.js';
 import { ProtocolError, UserError } from '../errors.js';
-import { applyDirectives, buildMessage, isTargeted, reminders, splitAgentName } from '../protocol.js';
-import { fmtTime, renderMessage, section } from '../render.js';
+import { applyEach, buildMessage, reminders, splitAgentName } from '../protocol.js';
+import { fmtTime, renderMessage, renderMessages, section } from '../render.js';
 import { appendLog, loadAgent, newAgent, recordOwnMessages, saveAgent } from '../state.js';
 import {
   agentName,
@@ -29,7 +29,8 @@ export const details = [
   '名稱：英數字、底線、連字號，英數字開頭，1 到 31 字元，慣例是 <vendor>-<編號>，例如 claude-1。',
   '本機已有這個名稱的狀態檔（且沒 leave）時拒絕：新開的 session 請換名稱；要接手這個身分（例如對話被壓縮後）加 --resume，保留角色、階段與游標，不重發 [JOIN]。',
   '--force：捨棄本機舊狀態重新進房；也會略過下面的名稱衝突檢查。',
-  '名稱在 24 小時內被別人用過（最後一則不是 [LEAVE] 或 [IDLE]）會拒絕，換名稱或加 --force。',
+  '建立新身分時，名稱（不分大小寫）在 24 小時內被別人用過（最後一則不是 [LEAVE] 或 [IDLE]）會拒絕，換名稱或加 --force。',
+  '有進行中的議題時，會依序套用議題之後主導者的 [ASSIGN]、[GO]、[CONTINUE]、[STOP]，直接到達正確階段。',
 ];
 
 const VENDORS = ['claude', 'gemini', 'codex', 'other'];
@@ -122,8 +123,8 @@ export async function run(ctx) {
   const raws = await fetchRecent(client, room.channelId);
   const now = Date.now();
 
-  // 只有本機沒有這個名稱的狀態檔時才檢查衝突；有狀態檔（已 leave 或 --force）代表是自己重新進房。
-  if (!existing && !ctx.values.force) {
+  // 走到這裡就是要建立新身分（本機沒有狀態檔、狀態檔已 leave，或 --force），檢查頻道裡有沒有別人在用；--force 跳過。
+  if (!ctx.values.force) {
     const clash = findConflict(raws, room, name, webhook.id, now);
     if (clash) {
       throw new ProtocolError(
@@ -143,20 +144,15 @@ export async function run(ctx) {
 
   const messages = normalizeAll(raws, room, state);
   const active = findActiveTopic(messages);
-  let notes = [];
-  const assigns = [];
+  const notes = [];
+  let applied = [];
   if (active) {
-    const topicNotes = applyDirectives(state, [active.topic], room);
-    const assignNotes = [];
-    // 依序套用議題之後對我生效的 [ASSIGN]；判斷用套用當下的狀態。
-    for (const m of active.after) {
-      if (m.kind === 'moderator' && m.tag === 'ASSIGN' && isTargeted(m, state)) {
-        assigns.push(m);
-        assignNotes.push(...applyDirectives(state, [m], room));
-      }
-    }
-    // 已被指派時，「等 [ASSIGN]」的議題提示就不適用了。
-    notes = assigns.length ? assignNotes : topicNotes;
+    // 議題本身與之後的主導者訊息逐則套用（[ASSIGN]、[GO]、[CONTINUE]、[STOP] 都算），晚進房也能直接到正確階段；
+    // 對象用套用當下的狀態判斷，印出對我生效的那幾則。
+    const moderatorAfter = active.after.filter((m) => m.kind === 'moderator');
+    const result = applyEach(state, [active.topic, ...moderatorAfter], room);
+    notes.push(...result.notes);
+    applied = result.targeted.filter((m) => m !== active.topic);
   }
 
   const fields = { vendor, model: oneLine(ctx.values.model), host: oneLine(ctx.values.host) };
@@ -173,7 +169,7 @@ export async function run(ctx) {
   ];
   if (active) {
     text.push('', '進行中的議題：', renderMessage(active.topic, { as: name }));
-    if (assigns.length) text.push('', '對你生效的 [ASSIGN]：', ...assigns.map((m) => renderMessage(m, { as: name })));
+    if (applied.length) text.push('', '之後對你生效的主導者指令：', renderMessages(applied, { as: name }));
   }
   const n = section('注意', notes);
   if (n) text.push(n);
@@ -187,7 +183,7 @@ export async function run(ctx) {
       room: { name: room.roomName, channelId: room.channelId },
       state: publicState(state, room),
       topic: active ? publicMessage(active.topic) : null,
-      assigns: assigns.map(publicMessage),
+      directives: applied.map(publicMessage),
       notes,
       reminders: rem,
     },

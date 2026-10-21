@@ -4,6 +4,7 @@ import { getToken, loadRoom } from './config.js';
 import { compareSnowflake, createClient } from './discord.js';
 import { DiscordError, UserError } from './errors.js';
 import { normalize, roundLimit, validateAgentName } from './protocol.js';
+import { fmtSize } from './render.js';
 import { clearWebhook, loadAgent, loadWebhook, saveWebhook } from './state.js';
 
 export function createContext({ command, values, positionals, stdin }) {
@@ -122,12 +123,19 @@ export function stateLines(state, room) {
   if (state.branch) lines.push(`分支：${state.branch}（${state.isolation || 'worktree'}）`);
   else if (state.isolation) lines.push(`隔離：${state.isolation}`);
   if (state.files?.length) lines.push(`可改檔案：${state.files.join(', ')}`);
+  if (state.assignBody) lines.push(`分工細節（[ASSIGN] id=${state.assignMessageId}）：`, state.assignBody);
   if (state.topic) {
     const f = state.topic.fields || {};
     const repo = f.repo || (room.defaultRepo ? `${room.defaultRepo}（房間預設）` : '未指定（有 branch 分工時用目前目錄）');
     const rounds = f.rounds || `${room.maxDiscussionRounds}（房間預設）`;
     lines.push(`議題：「${state.topic.title || '(未命名)'}」（id=${state.topic.id}）`);
     lines.push(`議題欄位：repo：${repo}　base：${f.base || room.defaultBase}　rounds：${rounds}`);
+    const files = state.topic.attachments || [];
+    if (files.length) {
+      lines.push(
+        `議題附檔：${files.map((a) => `${a.filename}（${fmtSize(a.size)}）`).join('、')}→ agentchat download --as ${state.name} ${state.topic.id}`,
+      );
+    }
   } else {
     lines.push('議題：無');
   }
@@ -145,6 +153,8 @@ export function publicState(state, room) {
     branch: state.branch,
     isolation: state.isolation,
     files: state.files,
+    assignMessageId: state.assignMessageId ?? null,
+    assignBody: state.assignBody ?? null,
     topic: state.topic,
     round: roundInfo(state, room),
     cursor: state.cursor,

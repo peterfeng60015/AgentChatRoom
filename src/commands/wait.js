@@ -1,10 +1,10 @@
 import { toInt } from '../args.js';
 import { compareSnowflake, snowflakeNow } from '../discord.js';
 import { ProtocolError, UserError } from '../errors.js';
-import { applyDirectives, buildMessage, reminders } from '../protocol.js';
+import { LEFT_TEXT, applyEach, buildMessage, reminders } from '../protocol.js';
 import { kindLabel, renderMessages, section } from '../render.js';
 import { appendLog, recordOwnMessages, updateAgent } from '../state.js';
-import { joinHint, normalizeAll, phaseOf, publicMessage, requireAgent, roundInfo, summaryLine } from '../context.js';
+import { normalizeAll, phaseOf, publicMessage, requireAgent, roundInfo, summaryLine } from '../context.js';
 import { sendParts } from '../publish.js';
 
 export const summary = '長輪詢等新訊息，套用主導者指令並移動游標';
@@ -36,16 +36,17 @@ export async function run(ctx) {
   const room = ctx.room;
   const initial = requireAgent(ctx);
   if (initial.left || initial.phase === 'left') {
-    throw new ProtocolError(`你已離開，要再參加請重新 join（${joinHint(initial.name)}）`);
+    throw new ProtocolError(LEFT_TEXT);
   }
   const timeout = toInt(ctx.values.timeout, Math.min(MAX_TIMEOUT, Math.round(room.waitTimeoutSec)), '--timeout');
   if (timeout > MAX_TIMEOUT) throw new UserError(`--timeout 範圍是 0 到 ${MAX_TIMEOUT} 秒`);
   const until = ctx.values.until ?? 'any';
   if (!UNTIL.includes(until)) throw new UserError(`--until 只接受 ${UNTIL.join('、')}`);
 
-  // §5.4：每次 wait 開始時，emptyWaitSince 是 null 就設為現在。
+  // §5.4：只有 --timeout > 0 且不在 work 階段的 wait 才計無人回應的時間；開始時 emptyWaitSince 是 null 就設為現在。
+  const timed = timeout > 0 && initial.phase !== 'work';
   const state = updateAgent(room.channelId, initial.name, (s) => {
-    if (!s.emptyWaitSince) s.emptyWaitSince = new Date().toISOString();
+    if (timed && !s.emptyWaitSince) s.emptyWaitSince = new Date().toISOString();
     if (!s.cursor) s.cursor = snowflakeNow();
   });
 
@@ -75,7 +76,7 @@ export async function run(ctx) {
   // 套用指令前重新讀檔：等待期間同一個 agent 可能已經發言（ownMessageIds、輪數有變）。
   let notes = [];
   let updated = updateAgent(room.channelId, state.name, (s) => {
-    notes = applyDirectives(s, collected, room);
+    ({ notes } = applyEach(s, collected, room));
     if (!s.cursor || compareSnowflake(lastSeen, s.cursor) > 0) s.cursor = lastSeen;
   });
   if (collected.length) {
@@ -83,7 +84,8 @@ export async function run(ctx) {
   }
 
   let status = reason ? 'matched' : 'timeout';
-  if (!collected.length && updated.phase !== 'idle') {
+  // 沒有符合條件的新訊息、而且計時沒被重設（別人只是進出房或發 [IDLE]）時才可能觸發。
+  if (timed && !reason && !['work', 'idle', 'left'].includes(updated.phase)) {
     const since = Date.parse(updated.emptyWaitSince);
     if (Number.isFinite(since) && Date.now() - since >= room.idleLimitMin * 60000) {
       const content = buildMessage(

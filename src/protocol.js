@@ -138,7 +138,8 @@ export function isReplyToMe(replyTo, self) {
 }
 
 // §4.4「指令對我生效」。只有主導者的指令算數，所以帶了 kind 且不是 moderator 一律不生效。
-// self 是 agent 狀態：沒 @ 的 [GO]／[CONTINUE]／[STOP] 要看 assigned 與 phase。
+// self 是 agent 狀態：沒 @ 的 [GO]／[CONTINUE]／[STOP] 要看 assigned、phase 與 phaseBeforeStop。
+// 「有 @」只算 agent 式的 @ token；Discord 選單產生的 <@使用者ID> 不算（targetsOf 已排除）。
 export function isTargeted(msg, self) {
   if (!msg || !self || !self.name) return false;
   if (msg.kind && msg.kind !== 'moderator') return false;
@@ -171,7 +172,10 @@ export function isTargeted(msg, self) {
         return named || (role !== null && names.includes(role));
       }
       if (tag === 'STOP') return !['closed', 'idle', 'left'].includes(phase);
-      return self.assigned === true && (phase === 'discussion' || phase === 'stopped');
+      if (self.assigned !== true) return false;
+      if (phase === 'discussion') return true;
+      // 停下前已經 done 的 agent 不會被沒 @ 的 GO／CONTINUE 拉回來。
+      return phase === 'stopped' && ['discussion', 'work'].includes(self.phaseBeforeStop);
     }
     default:
       return false;
@@ -382,6 +386,7 @@ function splitFiles(value) {
   return list.length ? list : null;
 }
 
+// [CONTINUE] 的 n 要先去掉 @ token 與 <@ID>，免得抓到 claude-1 的 1。
 function stripMentions(text) {
   return String(text ?? '')
     .replace(DISCORD_USER_RE, ' ')
@@ -390,13 +395,34 @@ function stripMentions(text) {
     .trim();
 }
 
+const PRESENCE_TAGS = new Set(['JOIN', 'LEAVE', 'IDLE']);
+
+// 逐則套用指令並依「套用當下」的狀態重算 mentionsMe、targetsMe（會改寫傳入的訊息物件），
+// 讓輸出的「← 提到你」與實際生效的指令一致。回傳 { notes, targeted }。
+export function applyEach(state, messages, room) {
+  const notes = [];
+  const targeted = [];
+  for (const m of messages) {
+    if (m.kind !== 'self') {
+      m.mentionsMe = isMentioned(m.content, state) || isReplyToMe(m.replyTo, state);
+      m.targetsMe = m.kind === 'moderator' && MODERATOR_TAGS.includes(m.tag) && isTargeted(m, state);
+      if (m.targetsMe) targeted.push(m);
+    }
+    notes.push(...applyDirectives(state, [m], room));
+  }
+  return { notes, targeted };
+}
+export const LEFT_TEXT = '你已離開這個房間；除非開這個 session 的使用者要求，不要重新 join';
+
 // 依序套用對我生效的主導者指令，回傳給 agent 看的「注意」。
 // 對象判斷用「當下」的狀態，所以同一批裡先 [ASSIGN] 給角色、再 [GO] @角色 也會生效。
 export function applyDirectives(state, messages, room) {
   const notes = [];
   for (const m of messages) {
     if (m.kind === 'self') continue;
-    state.emptyWaitSince = null;
+    // §5.4：別的 agent 進出房與 [IDLE] 不算有人回應，不重設無人回應的計時。
+    const presence = (m.kind === 'agent' || m.kind === 'bot') && PRESENCE_TAGS.has(m.tag);
+    if (!presence) state.emptyWaitSince = null;
     if (m.kind !== 'moderator') continue;
 
     // §4.4：主導者用 Discord 回覆我的任何一則訊息，或不加標籤直接 @ 我的名稱，都視為回答了待答問題。
@@ -412,13 +438,22 @@ export function applyDirectives(state, messages, room) {
 
     switch (m.tag) {
       case 'TOPIC':
-        state.topic = { id: m.id, title: m.title, fields: m.fields, body: m.body };
+        state.topic = {
+          id: m.id,
+          title: m.title,
+          fields: m.fields,
+          body: m.body,
+          attachments: (m.attachments || []).map((a) => ({ filename: a.filename, size: a.size })),
+        };
         state.phase = 'topic';
         state.role = null;
         state.task = null;
         state.branch = null;
         state.isolation = null;
         state.files = null;
+        state.assignMessageId = null;
+        state.assignBody = null;
+        state.phaseBeforeStop = null;
         state.assigned = false;
         state.pendingQuestionId = null;
         state.discussRound = 0;
@@ -426,25 +461,30 @@ export function applyDirectives(state, messages, room) {
         state.lastProgressAt = null;
         state.workStartedAt = null;
         notes.push(
-          `新議題「${m.title || '(未命名)'}」（id=${m.id}）。${topicRepoText(m.fields, room)}。等主導者 [ASSIGN]：agentchat wait --until mention。`,
+          `新議題「${m.title || '(未命名)'}」（id=${m.id}）。${topicRepoText(m.fields, room)}。${m.attachments?.length ? `議題附檔 ${m.attachments.length} 個，見訊息裡的 download 指令。` : ''}`,
         );
         break;
       case 'ASSIGN': {
+        // 整組取代分工：這則沒寫的欄位一律清成 null，不沿用上一個分工。
         const branch = m.fields.branch || null;
         const iso = String(m.fields.isolation || '').toLowerCase();
-        state.role = sanitizeRole(m.fields.role) || state.role || null;
-        state.task = m.fields.task || m.body || stripMentions(m.title) || null;
+        state.role = sanitizeRole(m.fields.role);
+        state.task = m.fields.task || null;
         state.branch = branch;
         state.isolation = iso === 'worktree' || iso === 'shared' ? iso : branch ? 'worktree' : null;
         state.files = splitFiles(m.fields.files);
+        state.assignMessageId = m.id;
+        state.assignBody = m.body || null;
         state.assigned = true;
         state.phase = 'discussion';
         state.discussRound = 0;
+        state.discussLimit = null;
         const parts = [`角色：${state.role || '(未指定)'}`];
         if (state.task) parts.push(`分工：${state.task}`);
         if (state.branch) parts.push(`分支：${state.branch}（${state.isolation}）`);
         else if (state.isolation) parts.push(`隔離：${state.isolation}`);
         if (state.files) parts.push(`可改檔案：${state.files.join(', ')}`);
+        if (state.assignBody) parts.push('細節見這則 [ASSIGN] 的內文');
         notes.push(
           `你被指派（id=${m.id}）：${parts.join('；')}。先用 agentchat ack 回覆你的理解，再用 agentchat discuss 討論（本段上限 ${roundLimit(state, room)} 則）。`,
         );
@@ -453,6 +493,8 @@ export function applyDirectives(state, messages, room) {
       case 'GO':
         state.phase = 'work';
         state.workStartedAt = m.timestamp || new Date().toISOString();
+        // 工作中的長步驟不算閒置（§5.4）。
+        state.emptyWaitSince = null;
         notes.push(
           `主導者 [GO]（id=${m.id}）：討論結束，依你的分工開始執行；每完成一個里程碑用 agentchat progress 回報（至少每 ${room.progressReminderMin} 分鐘一次），做完用 agentchat done。`,
         );
@@ -466,6 +508,8 @@ export function applyDirectives(state, messages, room) {
         break;
       }
       case 'STOP':
+        // 連續兩次 STOP 時保留第一次之前的階段，之後沒 @ 的 GO／CONTINUE 才判斷得對。
+        if (state.phase !== 'stopped') state.phaseBeforeStop = state.phase;
         state.phase = 'stopped';
         notes.push(`主導者 [STOP]（id=${m.id}）：立刻停下手上的動作，只用 agentchat wait --until moderator 等指示。`);
         break;
@@ -527,7 +571,7 @@ export function reminders(state, room, now = Date.now()) {
       list.push('已發過 [IDLE]：頻道長時間無人回應，請 agentchat leave 後結束任務並告知使用者。');
       break;
     case 'left':
-      list.push('你已離開房間：要再參加請重新 agentchat join。');
+      list.push(`${LEFT_TEXT}。`);
       break;
     default:
       break;
@@ -543,7 +587,7 @@ export function phaseError(state, command, room) {
   const phase = state.left ? 'left' : state.phase;
   const allowed = PHASE_COMMANDS[phase] ?? [];
   if (allowed.includes(command)) return null;
-  const can = allowed.length ? `目前可用：${allowed.join('、')}` : '要再發言請重新 agentchat join';
+  const can = allowed.length ? `目前可用：${allowed.join('、')}` : LEFT_TEXT;
   const hint = reminders({ ...state, phase }, { ...room, progressReminderMin: Infinity })[0];
   return `目前階段是 ${phase}，不能用 ${command}。${can}。${hint || ''}`;
 }

@@ -236,6 +236,11 @@ export async function startMockDiscord(options = {}) {
     if (req.method === 'GET' && path === '/users/@me') {
       return json(res, 200, { id: cfg.botId, username: 'agentchat-bot', discriminator: '0', bot: true });
     }
+    const user = path.match(/^\/users\/(\d+)$/);
+    if (req.method === 'GET' && user) {
+      if (user[1] !== cfg.moderatorId) return json(res, 404, { message: 'Unknown User', code: 10013 });
+      return json(res, 200, { id: cfg.moderatorId, username: 'peter', global_name: 'Peter' });
+    }
     if (req.method === 'GET' && path === '/applications/@me') {
       return json(res, 200, { id: cfg.botId, name: 'agentchat', flags: cfg.appFlags });
     }
