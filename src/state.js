@@ -8,8 +8,47 @@ import { UserError } from './errors.js';
 // 每個 agent 的本機狀態（游標、角色、階段）都放這裡，不進 git。
 export const STATE_DIR = path.resolve(process.env.AGENTCHAT_STATE_DIR || path.join(os.homedir(), '.agentchat'));
 
+// 名稱比對不分大小寫（§6.1），檔名一律用小寫；狀態裡仍保留原本的大小寫。
 function agentFile(channelId, name) {
-  return path.join(STATE_DIR, 'agents', String(channelId), `${name}.json`);
+  return path.join(STATE_DIR, 'agents', String(channelId), `${String(name).toLowerCase()}.json`);
+}
+
+const LOCK_WAIT_MS = 5000;
+const LOCK_STALE_MS = 2000;
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// 簡單的鎖檔：同一個 agent 的 wait 與發言指令可能同時讀改寫狀態檔，沒有鎖會互相蓋掉更新。
+// 鎖只在同步的讀改寫期間持有（毫秒等級），超過 LOCK_STALE_MS 還在就是行程當掉留下的，直接清掉。
+function withLock(file, fn) {
+  const lock = `${file}.lock`;
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const start = Date.now();
+  for (;;) {
+    try {
+      fs.closeSync(fs.openSync(lock, 'wx'));
+      break;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+    }
+    try {
+      if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) {
+        fs.rmSync(lock, { force: true });
+        continue;
+      }
+    } catch {
+      continue; // 鎖剛好被放掉了，再試一次。
+    }
+    if (Date.now() - start > LOCK_WAIT_MS) throw new UserError(`狀態檔被鎖住太久：${lock}`);
+    sleepSync(5 + Math.floor(Math.random() * 10));
+  }
+  try {
+    return fn();
+  } finally {
+    fs.rmSync(lock, { force: true });
+  }
 }
 
 function webhookFile(channelId) {
@@ -34,10 +73,17 @@ function writeAtomic(file, text, mode) {
   }
 }
 
+// 不先 existsSync 再讀：另一個行程可能剛好在中間刪掉檔案。檔案不存在回 null。
 function readJson(file, label) {
-  if (!fs.existsSync(file)) return null;
+  let text;
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
+    text = fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    if (e.code === 'ENOENT') return null;
+    throw new UserError(`${label}讀不到：${file}（${e.code || e.message}）`);
+  }
+  try {
+    return JSON.parse(text);
   } catch (e) {
     throw new UserError(`${label}損壞，無法解析：${file}（${e.message}）`);
   }
@@ -54,11 +100,13 @@ export function saveAgent(state) {
 
 // 重新讀檔、修改、存回。發言與 wait 可能同時進行，改狀態前一律以檔案上的最新內容為準。
 export function updateAgent(channelId, name, mutate) {
-  const state = loadAgent(channelId, name);
-  if (!state) throw new UserError(`找不到 ${name} 的狀態檔，請先 agentchat join`);
-  const result = mutate(state);
-  saveAgent(state);
-  return result === undefined ? state : result;
+  return withLock(agentFile(channelId, name), () => {
+    const state = loadAgent(channelId, name);
+    if (!state) throw new UserError(`找不到 ${name} 的狀態檔，請先 agentchat join`);
+    const result = mutate(state);
+    saveAgent(state);
+    return result === undefined ? state : result;
+  });
 }
 
 export function recordOwnMessages(state, ids, now = new Date().toISOString()) {
@@ -101,8 +149,13 @@ export function newAgent({ name, vendor = null, model = null, channelId, cursor 
   };
 }
 
+// 快取壞掉時當作沒有快取（ensureWebhook 會重新取得並覆寫）；錯誤訊息會附原文片段，可能帶出 token，所以不往外丟。
 export function loadWebhook(channelId) {
-  return readJson(webhookFile(channelId), 'webhook 快取');
+  try {
+    return readJson(webhookFile(channelId), 'webhook 快取');
+  } catch {
+    return null;
+  }
 }
 
 export function saveWebhook(channelId, webhook) {
@@ -110,8 +163,8 @@ export function saveWebhook(channelId, webhook) {
 }
 
 export function clearWebhook(channelId) {
-  const file = webhookFile(channelId);
-  if (fs.existsSync(file)) fs.unlinkSync(file);
+  // 兩個行程可能同時清，用 force 避免另一個先刪掉時丟 ENOENT。
+  fs.rmSync(webhookFile(channelId), { force: true });
 }
 
 export function appendLog(channelId, entry) {

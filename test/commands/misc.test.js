@@ -310,7 +310,7 @@ describe('status、read、download、Discord 錯誤', () => {
     for (let i = 0; i < 5; i++) env.mock.addMessage({ content: `之後 ${i}` });
     const r = await env.run(['read', '--as', 'claude-1', '--id', topic.id]);
     assert.equal(r.code, 0, r.stderr);
-    assert.match(r.stdout, new RegExp(`^訊息 ${topic.id}：\n\\[\\d\\d/\\d\\d \\d\\d:\\d\\d:\\d\\d\\] 主導者 Peter  \\(id=${topic.id}\\)  ← 提到你\n\\[TOPIC\\] 舊議題`));
+    assert.match(r.stdout, new RegExp(`^訊息 ${topic.id}：\n\\[\\d\\d/\\d\\d \\d\\d:\\d\\d:\\d\\d\\] 主導者 Peter  \\(id=${topic.id}\\)  ← 提到你\n│ \\[TOPIC\\] 舊議題\n│ \n│ 內容`));
     assert.ok(!r.stdout.includes('之後 0'));
     assert.equal((await env.run(['read', '--id', 'abc'])).code, 2);
     assert.equal((await env.run(['read', '--id', '123'])).code, 1);
@@ -325,9 +325,9 @@ describe('status、read、download、Discord 錯誤', () => {
     const r = await env.run(['read', '--as', 'claude-1', '--last', '3']);
     const blocks = r.stdout.trimEnd().split('\n').slice(1).join('\n').split('\n---\n');
     assert.equal(blocks.length, 3);
-    assert.match(blocks[0], /^\[\d\d\/\d\d \d\d:\d\d:\d\d\] agent gemini-1 \(後端\)  \(id=\d+\)  ← 提到你\n@claude-1 嗨$/);
-    assert.match(blocks[1], /^\[[^\]]+\] 人類 Someone  \(id=\d+\)\n路人$/);
-    assert.match(blocks[2], /^\[[^\]]+\] 你 claude-1  \(id=\d+\)\n\[INFO\]\n\n我的話$/);
+    assert.match(blocks[0], /^\[\d\d\/\d\d \d\d:\d\d:\d\d\] agent gemini-1 \(後端\)  \(id=\d+\)  ← 提到你\n│ @claude-1 嗨$/);
+    assert.match(blocks[1], /^\[[^\]]+\] 人類 Someone  \(id=\d+\)\n│ 路人$/);
+    assert.match(blocks[2], /^\[[^\]]+\] 你 claude-1  \(id=\d+\)\n│ \[INFO\]\n│ \n│ 我的話$/);
   });
 
   test('download：預設路徑、檔名清理、外部資料提醒、--name 與 --out', async () => {

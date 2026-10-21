@@ -1,15 +1,29 @@
-import { DiscordError } from './errors.js';
+import { DiscordError, UserError } from './errors.js';
 
 export const DEFAULT_API_BASE = 'https://discord.com/api/v10';
 const USER_AGENT = 'DiscordBot (https://github.com/peterfeng60015/AgentChatRoom, 0.1.0)';
 const DISCORD_EPOCH = 1420070400000n;
 const MAX_RETRIES = 5;
+// 單次請求的逾時；連線掛住時不要等 undici 預設的幾分鐘。
+const REQUEST_TIMEOUT_MS = 30_000;
+const DOWNLOAD_TIMEOUT_MS = 120_000;
 // retry_after 太長（全域限流）時與其讓 agent 卡住，不如直接報錯。
 const MAX_RATE_LIMIT_WAIT_MS = 60_000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const UNCERTAIN_HINT = 'Discord 沒有正常回應，訊息可能已經送出，先用 agentchat read --last 5 確認再決定要不要重發';
+
+// 真正的網路問題（連不上、逾時）才重試；其他例外（例如 token 含換行讓 header 不合法）不重試，
+// 而且訊息可能含 token，不能原樣印出。
+function isNetworkError(e) {
+  return e?.name === 'TimeoutError' || e?.name === 'AbortError' || Boolean(e?.cause);
+}
 
 function hintFor(status, label) {
+  if (status === 413) return 'Discord 拒收：附檔太大（超過伺服器的上傳上限），請縮小或分開傳';
+  if (status === 401 && label.startsWith('/webhooks/')) {
+    return 'webhook 已失效（token 不對或已被刪除），請執行 agentchat doctor 重新取得';
+  }
   if (status === 401) return 'bot token 無效或已重設，請檢查 .env 的 DISCORD_BOT_TOKEN';
   if (status === 403) return `bot 沒有權限存取 ${label}（請確認 bot 已邀進伺服器，且有對應頻道權限）`;
   if (status === 404) return `找不到資源 ${label}（請檢查 room.json 的 ID，或訊息、webhook 是否已被刪除）`;
@@ -34,7 +48,8 @@ export function snowflakeToDate(id) {
 
 async function retryAfterMs(res) {
   const data = await res.json().catch(() => ({}));
-  const header = Number(res.headers.get('retry-after'));
+  const raw = res.headers.get('retry-after');
+  const header = raw === null || raw.trim() === '' ? NaN : Number(raw);
   const seconds = Number.isFinite(data?.retry_after) ? data.retry_after : Number.isFinite(header) ? header : 1;
   return Math.max(0, Math.ceil(seconds * 1000));
 }
@@ -42,9 +57,15 @@ async function retryAfterMs(res) {
 // retryBaseMs：5xx 與網路錯誤的退避基準，第 n 次重試等 retryBaseMs × n。
 export function createClient(token, { apiBase, retryBaseMs = 1000 } = {}) {
   const base = String(apiBase || process.env.AGENTCHAT_API_BASE || DEFAULT_API_BASE).replace(/\/+$/, '');
+  try {
+    new URL(base);
+  } catch {
+    throw new UserError(`AGENTCHAT_API_BASE 不是合法網址：${base}`);
+  }
 
   // label 是給錯誤訊息看的路徑；webhook 路徑含 token，絕不能原樣放進錯誤訊息。
-  async function request(method, route, { json, form, auth = true, label = route } = {}) {
+  // retryUncertain 為 false 的請求（發言）不重試 5xx 與網路錯誤：Discord 可能已經收下，重試會重複發言。
+  async function request(method, route, { json, form, auth = true, label = route, retryUncertain = true } = {}) {
     const headers = { 'User-Agent': USER_AGENT };
     if (auth) headers.Authorization = `Bot ${token}`;
     let body;
@@ -57,13 +78,16 @@ export function createClient(token, { apiBase, retryBaseMs = 1000 } = {}) {
     for (let attempt = 0; ; attempt++) {
       let res;
       try {
-        res = await fetch(base + route, { method, headers, body });
+        res = await fetch(base + route, { method, headers, body, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
       } catch (e) {
+        if (!isNetworkError(e)) throw new DiscordError(0, null, '無法送出 Discord API 請求（請檢查 bot token 是否含換行或特殊字元）');
+        if (!retryUncertain) throw new DiscordError(0, null, `${UNCERTAIN_HINT}（${e.name === 'TimeoutError' ? '逾時' : e.cause?.code || '連線失敗'}）`);
         if (attempt < MAX_RETRIES) {
           await sleep(retryBaseMs * (attempt + 1));
           continue;
         }
-        throw new DiscordError(0, null, `無法連線到 Discord API（${new URL(base).host}）：${e.cause?.code || e.message}`);
+        const why = e.name === 'TimeoutError' ? '逾時' : e.cause?.code || '連線失敗';
+        throw new DiscordError(0, null, `無法連線到 Discord API（${new URL(base).host}）：${why}`);
       }
       if (res.status === 429 && attempt < MAX_RETRIES) {
         const wait = await retryAfterMs(res);
@@ -73,12 +97,27 @@ export function createClient(token, { apiBase, retryBaseMs = 1000 } = {}) {
         }
         throw new DiscordError(429, null, `Discord 要求等待 ${Math.ceil(wait / 1000)} 秒（限流），請稍後再試`);
       }
+      if (res.status >= 500 && !retryUncertain) {
+        await res.arrayBuffer().catch(() => null);
+        throw new DiscordError(res.status, null, `${UNCERTAIN_HINT}（HTTP ${res.status}）`);
+      }
       if (res.status >= 500 && attempt < MAX_RETRIES) {
         await res.arrayBuffer().catch(() => null);
         await sleep(retryBaseMs * (attempt + 1));
         continue;
       }
-      const text = await res.text();
+      // 回應本體讀到一半斷線或逾時，和連線失敗一樣處理。
+      let text;
+      try {
+        text = await res.text();
+      } catch {
+        if (!retryUncertain) throw new DiscordError(0, null, `${UNCERTAIN_HINT}（讀取回應失敗）`);
+        if (attempt < MAX_RETRIES) {
+          await sleep(retryBaseMs * (attempt + 1));
+          continue;
+        }
+        throw new DiscordError(0, null, `讀取 Discord API 回應失敗（${new URL(base).host}）`);
+      }
       let data = null;
       if (text) {
         try {
@@ -152,7 +191,7 @@ export function createClient(token, { apiBase, retryBaseMs = 1000 } = {}) {
         payload.attachments = files.map((f, i) => ({ id: i, filename: f.filename }));
       }
       const route = `${webhookRoute(webhook)}?wait=true`;
-      const opts = { auth: false, label: webhookLabel(webhook) };
+      const opts = { auth: false, label: webhookLabel(webhook), retryUncertain: false };
       if (!files.length) return request('POST', route, { ...opts, json: payload });
       const form = new FormData();
       form.append('payload_json', JSON.stringify(payload));
@@ -166,9 +205,9 @@ export function createClient(token, { apiBase, retryBaseMs = 1000 } = {}) {
     download: async (url, { maxBytes = Infinity } = {}) => {
       let res;
       try {
-        res = await fetch(url, { headers: { 'User-Agent': USER_AGENT } });
+        res = await fetch(url, { headers: { 'User-Agent': USER_AGENT }, signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
       } catch (e) {
-        throw new DiscordError(0, null, `附檔下載失敗：${e.cause?.code || e.message}`);
+        throw new DiscordError(0, null, `附檔下載失敗：${e.name === 'TimeoutError' ? '逾時' : e.cause?.code || '連線失敗'}`);
       }
       if (!res.ok) {
         throw new DiscordError(res.status, null, '附檔下載失敗，連結可能已過期；請重新執行 download 以取得新連結');

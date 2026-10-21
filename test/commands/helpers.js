@@ -44,7 +44,8 @@ export async function setup({ room = {}, mock = {}, sop = true } = {}) {
     DISCORD_BOT_TOKEN: server.config.token,
   };
 
-  function run(args, { input = '', env = {}, stdin = 'pipe' } = {}) {
+  // timeoutMs：子行程掛住時（例如又去讀不會關的 stdin）直接砍掉並讓測試失敗，而不是整個測試卡住。
+  function run(args, { input = '', env = {}, stdin = 'pipe', timeoutMs = 30_000 } = {}) {
     return new Promise((resolve, reject) => {
       const childEnv = { ...baseEnv, ...env };
       for (const [k, v] of Object.entries(childEnv)) if (v === undefined) delete childEnv[k];
@@ -53,8 +54,13 @@ export async function setup({ room = {}, mock = {}, sop = true } = {}) {
       let stderr = '';
       child.stdout.on('data', (c) => (stdout += c));
       child.stderr.on('data', (c) => (stderr += c));
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        reject(new Error(`agentchat ${args.join(' ')} 超過 ${timeoutMs} ms 沒結束`));
+      }, timeoutMs);
       child.on('error', reject);
       child.on('close', (code) => {
+        clearTimeout(timer);
         resolve({
           code,
           stdout,

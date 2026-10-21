@@ -18,15 +18,33 @@ export class ProtocolError extends Error {
   }
 }
 
+// 400 的 Invalid Form Body 把真正原因放在 errors 樹裡（例如 username 含 discord），取前幾則出來。
+function formErrors(errors) {
+  const found = [];
+  const walk = (node, path) => {
+    if (!node || typeof node !== 'object' || found.length >= 3) return;
+    if (Array.isArray(node._errors)) {
+      for (const e of node._errors) found.push(`${path || '(body)'}：${e.message || e.code}`);
+      return;
+    }
+    for (const [k, v] of Object.entries(node)) walk(v, path ? `${path}.${k}` : k);
+  };
+  walk(errors, '');
+  return found.slice(0, 3);
+}
+
 // Discord API 回傳的錯誤，附上 HTTP 狀態與提示。
 export class DiscordError extends Error {
   constructor(status, data, hint) {
-    const detail = data && typeof data === 'object' && data.message ? `：${data.message}` : '';
+    let detail = data && typeof data === 'object' && data.message ? `：${data.message}` : '';
+    const reasons = data && typeof data === 'object' ? formErrors(data.errors) : [];
+    if (reasons.length) detail += `（${reasons.join('；')}）`;
     super(`${hint || `Discord API 錯誤（HTTP ${status}）`}${detail}`);
     this.name = 'DiscordError';
     this.status = status;
     this.data = data;
-    this.exitCode = 1;
+    // 413 是檔案太大，屬於使用者可以自己修正的問題（§6.2）。
+    this.exitCode = status === 413 ? 2 : 1;
   }
 }
 

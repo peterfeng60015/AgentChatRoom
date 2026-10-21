@@ -3,7 +3,7 @@ import { requireAs } from './args.js';
 import { getToken, loadRoom } from './config.js';
 import { compareSnowflake, createClient } from './discord.js';
 import { DiscordError, UserError } from './errors.js';
-import { normalize, roundLimit, validateAgentName } from './protocol.js';
+import { isSystemMessage, normalize, roundLimit, validateAgentName } from './protocol.js';
 import { fmtSize } from './render.js';
 import { clearWebhook, loadAgent, loadWebhook, saveWebhook } from './state.js';
 
@@ -49,9 +49,10 @@ export function webhookIdOf(room) {
   return loadWebhook(room.channelId)?.id ?? null;
 }
 
+// 系統訊息（釘選、成員加入等）不是任何人的發言，不輸出也不參與判斷。
 export function normalizeAll(raws, room, self) {
   const webhookId = webhookIdOf(room);
-  return raws.map((raw) => normalize(raw, room, self, { webhookId }));
+  return raws.filter((raw) => !isSystemMessage(raw)).map((raw) => normalize(raw, room, self, { webhookId }));
 }
 
 // 確保本房 webhook 可用（§6.3 doctor 第 8 項）：快取有效就用；否則找頻道裡同名且有 token 的；再沒有就建立。
@@ -91,15 +92,24 @@ export const WEBHOOK_SOURCE_TEXT = {
   created: '已建立新的 webhook',
 };
 
-// 游標之後、不是自己發的訊息。excludeIds 是剛送出的訊息（可能還來不及被認成 self）。
-export async function fetchUnread(ctx, state, excludeIds = []) {
-  if (!state.cursor) return [];
-  const raws = await ctx.client.messagesAfter(ctx.room.channelId, state.cursor, 5);
-  return normalizeAll(raws, ctx.room, state).filter((m) => m.kind !== 'self' && !excludeIds.includes(m.id));
+export const UNREAD_PAGES = 5;
+
+// 游標之後、不是自己發的訊息則數。excludeIds 是剛送出的訊息（可能還來不及被認成 self）。
+// 最多抓 UNREAD_PAGES 頁；抓滿時 capped 為 true，實際可能更多。
+export async function countUnread(ctx, state, excludeIds = []) {
+  if (!state.cursor) return { count: 0, capped: false };
+  const raws = await ctx.client.messagesAfter(ctx.room.channelId, state.cursor, UNREAD_PAGES);
+  const count = normalizeAll(raws, ctx.room, state).filter((m) => m.kind !== 'self' && !excludeIds.includes(m.id)).length;
+  return { count, capped: raws.length >= UNREAD_PAGES * 100 };
 }
 
-export function unreadLine(count) {
-  return count > 0 ? `未讀：${count} 則，先用 agentchat wait --timeout 0 讀取` : null;
+export function unreadText(unread) {
+  return `${unread.count}${unread.capped ? '+' : ''}`;
+}
+
+export function unreadLine(unread) {
+  if (!unread || unread.count <= 0) return null;
+  return `未讀：${unreadText(unread)} 則，先用 agentchat wait --timeout 0 讀取`;
 }
 
 export function roundInfo(state, room) {
@@ -126,7 +136,7 @@ export function stateLines(state, room) {
   if (state.assignBody) lines.push(`分工細節（[ASSIGN] id=${state.assignMessageId}）：`, state.assignBody);
   if (state.topic) {
     const f = state.topic.fields || {};
-    const repo = f.repo || (room.defaultRepo ? `${room.defaultRepo}（房間預設）` : '未指定（有 branch 分工時用目前目錄）');
+    const repo = f.repo || (room.defaultRepo ? `${room.defaultRepo}（房間預設）` : '未指定（有 branch 或 isolation 分工時用目前目錄所在的 git repo）');
     const rounds = f.rounds || `${room.maxDiscussionRounds}（房間預設）`;
     lines.push(`議題：「${state.topic.title || '(未命名)'}」（id=${state.topic.id}）`);
     lines.push(`議題欄位：repo：${repo}　base：${f.base || room.defaultBase}　rounds：${rounds}`);

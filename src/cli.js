@@ -3,6 +3,9 @@ import { exitCodeOf, UserError, ProtocolError, DiscordError } from './errors.js'
 import { isCommand, loadCommand, renderUsage } from './registry.js';
 import { createContext } from './context.js';
 
+// 指令名稱前面允許的全域旗標（不帶值的才能放在前面，帶值的 --as 等會和指令名稱混淆）。
+const LEADING_FLAGS = new Set(['--json', '-h', '--help']);
+
 // --json 要在解析參數之前就知道，參數錯誤時才能用 JSON 回報。`--` 之後是內文，不算。
 function wantsJson(argv) {
   for (const a of argv) {
@@ -29,10 +32,17 @@ export async function main(argv, io = {}) {
   const stderr = io.stderr ?? process.stderr;
   const json = wantsJson(argv);
   try {
-    let [name, ...rest] = argv;
-    if (name === undefined || name === '-h' || name === '--help' || name === '--json') {
-      rest = argv.filter((a) => a === '--json');
+    // `agentchat --json post …`、`agentchat -h post` 這類把旗標放在指令前面的寫法也照常執行。
+    let i = 0;
+    while (i < argv.length && LEADING_FLAGS.has(argv[i])) i++;
+    const leading = argv.slice(0, i);
+    let name = argv[i];
+    // 旗標放回參數最前面（不能放最後：`--` 之後的都算內文）。
+    let rest = [...leading, ...argv.slice(i + 1)];
+    if (name === undefined) {
+      // 只有旗標（或什麼都沒給）：印總覽。
       name = 'help';
+      rest = leading.filter((a) => a === '--json');
     }
     if (!isCommand(name)) {
       throw new UserError(`不認得的指令：${name}。用 agentchat help 看所有指令`);

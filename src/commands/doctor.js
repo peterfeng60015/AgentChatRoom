@@ -1,7 +1,7 @@
 import { findToken, loadRoom } from '../config.js';
 import { createClient } from '../discord.js';
 import { DiscordError } from '../errors.js';
-import { displayName, validateAgentName } from '../protocol.js';
+import { validateAgentName } from '../protocol.js';
 import { loadAgent } from '../state.js';
 import { WEBHOOK_SOURCE_TEXT, ensureWebhook, summaryLine } from '../context.js';
 
@@ -46,9 +46,15 @@ export async function run(ctx) {
   }
 
   // 3. bot token（不印出 token）
-  const { token, source } = findToken();
-  if (token) add('OK', 'bot token', `已找到（來源：${source}）`);
-  else fail('bot token', '找不到 DISCORD_BOT_TOKEN：請設定環境變數，或複製 .env.example 為 .env 並填入', true);
+  let token = null;
+  try {
+    const found = findToken();
+    token = found.token;
+    if (token) add('OK', 'bot token', `已找到（來源：${found.source}）`);
+    else fail('bot token', '找不到 DISCORD_BOT_TOKEN：請設定環境變數，或複製 .env.example 為 .env 並填入', true);
+  } catch (e) {
+    fail('bot token', e.message, true);
+  }
 
   let webhook = null;
   let skipped = false;
@@ -83,17 +89,29 @@ export async function run(ctx) {
         }
       });
 
-      // 6. 頻道
+      // 6. 頻道（404 代表 room.json 的 channelId 填錯，是設定問題）
+      let channelOk = false;
       await step('頻道', async () => {
-        const ch = await client.channel(room.channelId);
+        let ch;
+        try {
+          ch = await client.channel(room.channelId);
+        } catch (e) {
+          if (e instanceof DiscordError && e.status === 404) {
+            fail('頻道', `找不到頻道 ${room.channelId}：請檢查 room.json 的 channelId`, true);
+            return;
+          }
+          throw e;
+        }
         if (ch.guild_id !== room.guildId) {
           fail('頻道', `頻道 ${room.channelId} 不屬於 room.guildId ${room.guildId}（實際是 ${ch.guild_id ?? '無'}）`, true);
         } else if (THREAD_TYPES.has(ch.type)) {
           fail('頻道', `#${ch.name ?? room.channelId} 是討論串，尚未支援討論串；room.json 的 channelId 請填一般文字頻道`, true);
         } else if (!TEXT_TYPES.has(ch.type)) {
           add('WARN', '頻道', `#${ch.name ?? room.channelId} 的類型是 ${ch.type}，不是一般文字頻道，可能無法使用`);
+          channelOk = true;
         } else {
           add('OK', '頻道', `#${ch.name ?? room.channelId}（伺服器 ${ch.guild_id}）`);
+          channelOk = true;
         }
       });
 
@@ -115,8 +133,9 @@ export async function run(ctx) {
         }
       });
 
-      // 8. webhook
-      await step('webhook', async () => {
+      // 8. webhook：頻道有問題（填錯、不屬於這個伺服器、討論串）時不要在那裡建立 webhook。
+      if (!channelOk) add('WARN', 'webhook', '頻道檢查沒通過，略過（不在錯的頻道建立 webhook）');
+      else await step('webhook', async () => {
         try {
           const res = await ensureWebhook(client, room, { verify: true });
           webhook = res.webhook;
@@ -134,10 +153,8 @@ export async function run(ctx) {
         if (!webhook) add('WARN', '測試訊息', '沒有可用的 webhook，略過');
         else {
           await step('測試訊息', async () => {
-            const state = ctx.values.as && !validateAgentName(ctx.values.as) ? loadAgent(room.channelId, ctx.values.as) : null;
-            const username = ctx.values.as && !validateAgentName(ctx.values.as)
-              ? displayName(ctx.values.as, state?.role)
-              : `${room.webhookName}-doctor`;
+            // 不用 agent 的名稱發：否則還沒 join 的名稱會因為這則測試訊息被 join 判成「24 小時內有人用過」。
+            const username = `${room.webhookName}-doctor`;
             const msg = await client.executeWebhook(webhook, {
               content: '[INFO] doctor 測試',
               username,
