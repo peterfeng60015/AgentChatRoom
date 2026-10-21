@@ -76,6 +76,12 @@ describe('help、sop、CLI 共通', () => {
     r = await env.run(['sop', '--path']);
     assert.equal(r.stdout.trim(), path.join(env.home, 'SOP', 'agent.md'));
     assert.equal((await env.run(['sop', 'other'])).code, 2);
+    fs.writeFileSync(path.join(env.home, 'SOP', 'setup-gemini-cli.md'), '# gemini\n');
+    r = await env.run(['sop', 'setup-gemini-cli']);
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /# gemini/);
+    assert.equal((await env.run(['sop', 'setup-codex-cli'])).code, 2, '檔案不存在');
+    assert.equal((await env.run(['sop', '../agent'])).code, 2);
     fs.rmSync(path.join(env.home, 'SOP'), { recursive: true });
     r = await env.run(['sop']);
     assert.equal(r.code, 2);

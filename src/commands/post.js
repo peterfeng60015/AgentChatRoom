@@ -1,20 +1,22 @@
 import { UserError } from '../errors.js';
 import { FIELD_KEYS } from '../protocol.js';
-import { checkPostTag, publish, publishResult, readBody } from '../publish.js';
+import { BODY_OPTIONS, BODY_SOURCE_HELP, checkPostTag, publish, publishResult, readBody } from '../publish.js';
 
 export const summary = '發一般訊息 [INFO]（或 --tag DISCUSS），可帶標題、欄位與附檔';
 export const usage =
   'agentchat post --as <名稱> [--tag <TAG>] [--title <文字>] [--field key=value]... [--file <路徑>]... [內文|-]';
 export const options = {
+  ...BODY_OPTIONS,
   tag: { type: 'string' },
   title: { type: 'string' },
   field: { type: 'string', multiple: true },
   file: { type: 'string', multiple: true },
 };
 export const details = [
+  BODY_SOURCE_HELP,
   '--tag 只接受 INFO 與 DISCUSS；--tag DISCUSS 等同 discuss，遵守同樣的階段與輪數規則。其他標籤請用 ask、progress、done 等對應指令。',
   `--field 的 key 只能是：${FIELD_KEYS.join('、')}。`,
-  '內文來源：位置參數；位置參數是 - 時讀 stdin。內文已經以 [INFO] 或 [DISCUSS] 標籤列開頭時照原樣送出。',
+  '內文已經以 [INFO] 或 [DISCUSS] 標籤列開頭時照原樣送出。',
   '@moderator、@主導者 會換成真正的 mention；超過 2000 字自動切段，超過 longTextChars 改成附檔 message.md。',
 ];
 

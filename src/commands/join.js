@@ -87,6 +87,9 @@ export async function run(ctx) {
   const client = ctx.client;
   const existing = loadAgent(room.channelId, name);
 
+  if (ctx.values.resume && (!existing || existing.left)) {
+    throw new ProtocolError('沒有可接手的身分，請不帶 --resume 進房');
+  }
   // 本機已有這個名稱、還沒 leave：可能是本機另一個 session 正在用，預設拒絕；--resume 接手，--force 捨棄重來。
   if (existing && !existing.left && !ctx.values.force) {
     if (!ctx.values.resume) {

@@ -51,11 +51,13 @@ const BROADCAST = new Set(BROADCAST_NAMES);
 const TAG_LINE_RE = /^\s*(?:\[\s*([A-Za-z]+)\s*\]|【\s*([A-Za-z]+)\s*】|［\s*([A-Za-z]+)\s*］)(.*)$/;
 const FIELD_LINE_RE = /^\s*([A-Za-z]+)\s*[:：]\s*(.*)$/;
 
-// §4.4 的 mention：@ 前面是行首或不是 email 帳號字元（中文緊接也算）。
-// @ 後第一個字是英數字或底線時，token 是最長的 [A-Za-z0-9_-]；否則取到下一個空白或標點為止。
-const MENTION_RE = /(?<![A-Za-z0-9_.+-])[@＠](?:([A-Za-z0-9_][A-Za-z0-9_-]*)|([^\s\p{P}]+))/gu;
+// §4.4 的 @ 位置：@ 或 ＠，前面是行首或不是 email 帳號字元（中文緊接也算），後面緊接非空白字元。
+const AT_RE = /(?<![A-Za-z0-9_.+-])[@＠](?=\S)/g;
 const DISCORD_USER_RE = /<@!?(\d+)>/g;
-const MODERATOR_ALIASES = new Set(['moderator', '主導者']);
+// Discord 選單產生的 <@使用者ID>、<@&角色ID> 裡的 @ 不是 @ 位置。
+const DISCORD_MENTION_RE = /<@[!&]?\d+>/g;
+const ASCII_WORD_CHAR = /[A-Za-z0-9_-]/;
+const MODERATOR_ALIASES = ['moderator', '主導者'];
 
 export function validateAgentName(name) {
   if (!name || !NAME_RE.test(name)) {
@@ -103,32 +105,66 @@ export function buildMessage(tag, title = '', fields = {}, body = '') {
   return lines.join('\n');
 }
 
+// users 是 <@ID> 裡的 ID；at 是每個 @ 位置之後第一個字元的索引。
 export function extractMentions(content = '') {
   const text = String(content ?? '');
   const users = [...text.matchAll(DISCORD_USER_RE)].map((m) => m[1]);
-  const stripped = text.replace(DISCORD_USER_RE, ' ');
-  const names = [...stripped.matchAll(MENTION_RE)].map((m) => (m[1] ?? m[2]).toLowerCase());
-  return { users, names };
+  const skip = [...text.matchAll(DISCORD_MENTION_RE)].map((m) => [m.index, m.index + m[0].length]);
+  const at = [];
+  for (const m of text.matchAll(AT_RE)) {
+    if (!skip.some(([a, b]) => m.index >= a && m.index < b)) at.push(m.index + 1);
+  }
+  return { users, at };
+}
+
+// W 之後是不是邊界：W 以英數字、_、- 結尾時，下一字不能是這些字元；
+// 以其他字元（例如中文）結尾時，下一字要是空白、- 與 _ 以外的標點或符號。
+function isWordBoundary(word, next) {
+  if (next === undefined) return true;
+  const last = [...word].pop();
+  if (ASCII_WORD_CHAR.test(last)) return !ASCII_WORD_CHAR.test(next);
+  if (/\s/.test(next)) return true;
+  if (next === '-' || next === '_') return false;
+  return /[\p{P}\p{S}]/u.test(next);
+}
+
+// §4.4「@ 到 W」：某個 @ 位置之後的文字以 W 開頭（不分大小寫），而且 W 之後是邊界。
+export function mentionsWord(text, word) {
+  const w = String(word ?? '');
+  if (!w) return false;
+  const t = String(text ?? '');
+  const lower = w.toLowerCase();
+  for (const p of extractMentions(t).at) {
+    if (t.slice(p, p + w.length).toLowerCase() !== lower) continue;
+    const next = [...t.slice(p + w.length, p + w.length + 2)][0];
+    if (isWordBoundary(w, next)) return true;
+  }
+  return false;
 }
 
 export function isBroadcastName(name) {
   return BROADCAST.has(String(name).toLowerCase());
 }
 
-export function isMentioned(content, self) {
-  if (!self || !self.name) return false;
-  const { names } = extractMentions(content);
-  const n = String(self.name).toLowerCase();
-  const r = self.role ? String(self.role).toLowerCase() : null;
-  return names.some((x) => x === n || BROADCAST.has(x) || (r !== null && x === r));
+function mentionsBroadcast(text) {
+  return BROADCAST_NAMES.some((w) => mentionsWord(text, w));
 }
 
-// 指令的作用對象只看第一行。names 不含廣播字。
+export function isMentioned(content, self) {
+  if (!self || !self.name) return false;
+  return (
+    mentionsWord(content, self.name) || (Boolean(self.role) && mentionsWord(content, self.role)) || mentionsBroadcast(content)
+  );
+}
+
+function firstLineOf(content) {
+  return String(content ?? '').replace(/\r\n?/g, '\n').split('\n')[0];
+}
+
+// 指令的作用對象只看第一行：有沒有 @ 位置、有沒有 @ 到廣播詞；對象比對交給 isTargeted。
 export function targetsOf(content = '') {
-  const firstLine = String(content ?? '').replace(/\r\n?/g, '\n').split('\n')[0];
-  const { names } = extractMentions(firstLine);
-  const broadcast = names.some((x) => BROADCAST.has(x));
-  return { names: [...new Set(names.filter((x) => !BROADCAST.has(x)))], broadcast };
+  const first = firstLineOf(content);
+  return { hasAt: extractMentions(first).at.length > 0, broadcast: mentionsBroadcast(first) };
 }
 
 // 被回覆的訊息是不是我發的：最近的 ownMessageIds，加上待答問題（掉出最近 50 則也認得）。
@@ -139,18 +175,18 @@ export function isReplyToMe(replyTo, self) {
 
 // §4.4「指令對我生效」。只有主導者的指令算數，所以帶了 kind 且不是 moderator 一律不生效。
 // self 是 agent 狀態：沒 @ 的 [GO]／[CONTINUE]／[STOP] 要看 assigned、phase 與 phaseBeforeStop。
-// 「有 @」只算 agent 式的 @ token；Discord 選單產生的 <@使用者ID> 不算（targetsOf 已排除）。
+// 「第一行有 @」是第一行至少有一個 @ 位置；Discord 選單產生的 <@使用者ID> 不算。
 export function isTargeted(msg, self) {
   if (!msg || !self || !self.name) return false;
   if (msg.kind && msg.kind !== 'moderator') return false;
   const tag = msg.tag;
   if (!tag) return false;
   const content = msg.content ?? `[${tag}]${msg.title ? ' ' + msg.title : ''}`;
-  const { names, broadcast } = targetsOf(content);
+  const first = firstLineOf(content);
+  const { hasAt, broadcast } = targetsOf(content);
   const name = String(self.name).toLowerCase();
-  const role = self.role ? String(self.role).toLowerCase() : null;
   const phase = self.left ? 'left' : self.phase;
-  const named = broadcast || names.includes(name);
+  const named = broadcast || mentionsWord(first, self.name);
   switch (tag) {
     case 'TOPIC':
     case 'CLOSE':
@@ -167,9 +203,9 @@ export function isTargeted(msg, self) {
     case 'GO':
     case 'CONTINUE':
     case 'STOP': {
-      if (broadcast || names.length) {
+      if (hasAt) {
         if (phase === 'left') return false;
-        return named || (role !== null && names.includes(role));
+        return named || (Boolean(self.role) && mentionsWord(first, self.role));
       }
       if (tag === 'STOP') return !['closed', 'idle', 'left'].includes(phase);
       if (self.assigned !== true) return false;
@@ -182,11 +218,18 @@ export function isTargeted(msg, self) {
   }
 }
 
-// 主導者別名用和其他 mention 一樣的 token 規則：`請@主導者 看` 會換，`@主導者請看` 的 token 是「主導者請看」不換。
+// 主導者別名只看 @ 位置與開頭、不要求邊界（`@主導者決定` 也換）：寧可多通知，不要漏掉。
 export function resolveMentions(text, room) {
-  return String(text ?? '').replace(MENTION_RE, (whole, ascii, other) =>
-    MODERATOR_ALIASES.has((ascii ?? other).toLowerCase()) ? `<@${room.moderatorUserId}>` : whole,
-  );
+  const t = String(text ?? '');
+  let out = '';
+  let last = 0;
+  for (const p of extractMentions(t).at) {
+    const alias = MODERATOR_ALIASES.find((a) => t.slice(p, p + a.length).toLowerCase() === a);
+    if (!alias) continue;
+    out += `${t.slice(last, p - 1)}<@${room.moderatorUserId}>`;
+    last = p + alias.length;
+  }
+  return out + t.slice(last);
 }
 
 // 依 code point 截斷，避免把 emoji 等代理對切成半個；長度用 UTF-16 計，保證不超過上限。
@@ -389,8 +432,8 @@ function splitFiles(value) {
 // [CONTINUE] 的 n 要先去掉 @ token 與 <@ID>，免得抓到 claude-1 的 1。
 function stripMentions(text) {
   return String(text ?? '')
-    .replace(DISCORD_USER_RE, ' ')
-    .replace(MENTION_RE, ' ')
+    .replace(DISCORD_MENTION_RE, ' ')
+    .replace(/(?<![A-Za-z0-9_.+-])[@＠][\p{L}\p{N}\p{M}_-]*/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -428,7 +471,7 @@ export function applyDirectives(state, messages, room) {
     // §4.4：主導者用 Discord 回覆我的任何一則訊息，或不加標籤直接 @ 我的名稱，都視為回答了待答問題。
     if (state.pendingQuestionId && m.tag !== 'ANSWER') {
       const byReply = isReplyToMe(m.replyTo, state);
-      const byName = !m.tag && extractMentions(m.content).names.includes(String(state.name).toLowerCase());
+      const byName = !m.tag && mentionsWord(m.content, state.name);
       if (byReply || byName) {
         notes.push(`主導者${byReply ? '回覆了你' : '提到你'}（id=${m.id}），你的待答問題視為已回答，請依內容繼續。`);
         state.pendingQuestionId = null;
@@ -485,8 +528,11 @@ export function applyDirectives(state, messages, room) {
         else if (state.isolation) parts.push(`隔離：${state.isolation}`);
         if (state.files) parts.push(`可改檔案：${state.files.join(', ')}`);
         if (state.assignBody) parts.push('細節見這則 [ASSIGN] 的內文');
+        // 同一個 branch 指派給多人時，worktree 模式下會互相衝突。
+        const many = targetsOf(m.content).broadcast || extractMentions(firstLineOf(m.content)).at.length > 1;
+        const clash = branch && many ? '這則指派給了多人且指定同一個 branch，worktree 模式會衝突，請先用 ask 向主導者確認。' : '';
         notes.push(
-          `你被指派（id=${m.id}）：${parts.join('；')}。先用 agentchat ack 回覆你的理解，再用 agentchat discuss 討論（本段上限 ${roundLimit(state, room)} 則）。`,
+          `你被指派（id=${m.id}）：${parts.join('；')}。${clash}先用 agentchat ack 回覆你的理解，再用 agentchat discuss 討論（本段上限 ${roundLimit(state, room)} 則）。`,
         );
         break;
       }

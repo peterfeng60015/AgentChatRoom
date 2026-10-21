@@ -1,16 +1,18 @@
-import { publish, publishResult, readBody } from '../publish.js';
+import { BODY_OPTIONS, BODY_SOURCE_HELP, publish, publishResult, readBody } from '../publish.js';
 import { requireAgent } from '../context.js';
 
 export const summary = '發 [DONE] 完成分工，只在 work 階段可用，階段改為 done';
 export const usage =
   'agentchat done --as <名稱> [--branch <分支>] [--worktree <路徑>] [--commit <SHA>] [--file <路徑>]... <摘要|->';
 export const options = {
+  ...BODY_OPTIONS,
   branch: { type: 'string' },
   worktree: { type: 'string' },
   commit: { type: 'string' },
   file: { type: 'string', multiple: true },
 };
-export const details = ['--branch 預設取自本機狀態。'];
+export const details = [
+  BODY_SOURCE_HELP,'--branch 預設取自本機狀態。'];
 
 const oneLine = (v) => (v === undefined ? undefined : String(v).replace(/[\r\n]+/g, ' ').trim());
 

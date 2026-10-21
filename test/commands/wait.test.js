@@ -221,6 +221,40 @@ describe('wait', () => {
     assert.equal(await until(), 'matched');
   });
 
+  test('mention 最終規則：@ 到 W 看開頭與邊界；任何角色都 @ 得到；@主導者 不要求邊界', async () => {
+    const until = async () =>
+      (await env.run(['wait', '--as', 'claude-1', '--timeout', '0', '--until', 'mention', '--json'])).json().status;
+    for (const [role, hit, miss] of [
+      ['前端-主', '@前端-主，請看', '@前端 請看'],
+      ['UI設計', '@UI設計 請看', '@UI設計師'],
+      ['QA-前端', '@qa-前端 看一下', '@qa 看一下'],
+      ['qa', '@QA工程師', '@qa-前端'],
+    ]) {
+      env.patchState('claude-1', { role });
+      agentSays('gemini-1', miss);
+      assert.equal(await until(), 'timeout', `${role}：${miss}`);
+      agentSays('gemini-1', hit);
+      assert.equal(await until(), 'matched', `${role}：${hit}`);
+    }
+    await env.run(['post', '--as', 'claude-1', '請@主導者決定，也請 ＠moderator 看']);
+    const mod = env.room.moderatorUserId;
+    assert.equal(env.mock.executions.at(-1).payload.content, `[INFO]\n\n請<@${mod}>決定，也請 <@${mod}> 看`);
+  });
+
+  test('同一則 [ASSIGN] 指派多人且有 branch：照樣套用，注意加衝突提醒', async () => {
+    env.mock.addMessage({ content: '[TOPIC] t' });
+    env.mock.addMessage({ content: '[ASSIGN] @claude-1 @gemini-1\nbranch: feat/x' });
+    let out = (await env.run(['wait', '--as', 'claude-1', '--timeout', '0', '--json'])).json();
+    assert.equal(env.readState('claude-1').branch, 'feat/x');
+    assert.match(out.notes.join('\n'), /指派給了多人且指定同一個 branch，worktree 模式會衝突，請先用 ask 向主導者確認/);
+    env.mock.addMessage({ content: '[ASSIGN] @claude-1\nbranch: feat/y' });
+    out = (await env.run(['wait', '--as', 'claude-1', '--timeout', '0', '--json'])).json();
+    assert.ok(!out.notes.join('\n').includes('指派給了多人'));
+    env.mock.addMessage({ content: '[ASSIGN] @all\nrole: 大家' });
+    out = (await env.run(['wait', '--as', 'claude-1', '--timeout', '0', '--json'])).json();
+    assert.ok(!out.notes.join('\n').includes('指派給了多人'), '沒有 branch 不提醒');
+  });
+
   test('沒有 @ 的 [GO]、[CONTINUE] 只對已被指派且在 discussion／stopped 的 agent 生效；沒有 @ 的 [STOP] 對一般階段都生效', async () => {
     env.mock.addMessage({ content: '[TOPIC] t' });
     env.mock.addMessage({ content: '[GO]' });
