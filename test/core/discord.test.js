@@ -22,6 +22,7 @@ const server = http.createServer(async (req, res) => {
     query: Object.fromEntries(url.searchParams),
     headers: req.headers,
     body: Buffer.concat(chunks),
+    at: Date.now(),
     req,
   };
   requests.push(rec);
@@ -62,13 +63,14 @@ function serve(fn) {
 }
 // 去掉 API 前綴後的路徑。
 const routeOf = (rec) => rec.path.replace(/^\/api\/v10/, '');
-const client = (opts = {}) => createClient(BOT_TOKEN, { retryBaseMs: 1, ...opts });
+// 除了驗環境變數預設值的那一題，都明確傳 apiBase：實作就算沒讀 AGENTCHAT_API_BASE，也不會打到真的 discord.com。
+const client = (opts = {}) => createClient(BOT_TOKEN, { apiBase: API, retryBaseMs: 1, ...opts });
 const isDiscordError = (status) => (e) => {
   assert.ok(e instanceof DiscordError, `應該是 DiscordError：${e}`);
   if (status !== undefined) assert.equal(e.status, status);
   return true;
 };
-const hasCjk = (s) => /[一-鿿]/.test(s);
+const errorOf = (promise) => promise.then(() => assert.fail('應該要丟錯'), (e) => e);
 
 // ---- snowflake ----
 
@@ -170,18 +172,22 @@ describe('messages / messagesAfter', () => {
     sendJson(res, 200, page.map((id) => ({ id })));
   };
 
+  // SPEC 沒規定每頁幾則，從實作送出的 limit 算預期值。
   test('messagesAfter 一頁一頁抓到最新，由舊到新、不重複', async () => {
     serve(pager);
     const all = await client().messagesAfter('123', '1000');
     assert.deepEqual(all.map((m) => m.id), channel);
-    assert.equal(requests.length, 3);
+    const per = Number(requests[0].query.limit);
+    assert.ok(per > 0 && per <= 100, `每頁 ${per} 則`);
+    assert.ok(requests.length >= Math.ceil(channel.length / per) && requests.length <= Math.ceil(channel.length / per) + 1);
   });
 
   test('messagesAfter 最多抓 maxPages 頁', async () => {
     serve(pager);
     const all = await client().messagesAfter('123', '1000', 2);
-    assert.deepEqual(all.map((m) => m.id), channel.slice(0, 200));
+    const per = Number(requests[0].query.limit);
     assert.equal(requests.length, 2);
+    assert.deepEqual(all.map((m) => m.id), channel.slice(0, 2 * per));
   });
 });
 
@@ -231,8 +237,7 @@ describe('executeWebhook / download', () => {
       res.end(bytes);
     });
     const buf = await client().download(`${ORIGIN}/cdn/attachments/1/2/a.bin`);
-    assert.ok(Buffer.isBuffer(buf));
-    assert.deepEqual([...buf], [...bytes]);
+    assert.deepEqual([...Buffer.from(buf)], [...bytes]);
   });
 
   test('download 失敗丟 DiscordError', async () => {
@@ -243,35 +248,55 @@ describe('executeWebhook / download', () => {
 
 // ---- 錯誤提示 ----
 
-describe('401、403、404：中文提示、不重試、不洩漏 token', () => {
+describe('401、403、404：專屬的中文提示、不重試、不洩漏 token', () => {
+  // 一般錯誤訊息本身可能就含中文，所以拿沒有專屬提示的 418 當對照：401/403/404 不能只是把狀態碼換掉。
+  const messageFor = async (status) => {
+    serve((rec, res) => sendJson(res, status, { message: 'nope', code: 0 }));
+    return errorOf(client().channel('123'));
+  };
+
   for (const status of [401, 403, 404]) {
     test(`${status}`, async () => {
-      serve((rec, res) => sendJson(res, status, { message: 'nope', code: 0 }));
-      const err = await client().channel('123').catch((e) => e);
+      const generic = (await messageFor(418)).message.replaceAll('418', String(status));
+      const err = await messageFor(status);
       isDiscordError(status)(err);
-      assert.ok(hasCjk(err.message), err.message);
+      assert.notEqual(err.message, generic, `沒有專屬提示：${err.message}`);
+      assert.match(err.message, /[\u4e00-\u9fff]/);
       assert.ok(!err.message.includes(BOT_TOKEN));
       assert.equal(requests.length, 1);
     });
   }
+});
 
-  test('webhook 端點出錯時，錯誤訊息不含 webhook token（§9）', async () => {
-    serve((rec, res) => sendJson(res, 404, { message: 'Unknown Webhook', code: 10015 }));
-    for (const call of [
-      () => client().getWebhook(HOOK.id, HOOK.token),
-      () => client().executeWebhook(HOOK, { content: 'x', username: 'claude-1', allowedMentions: { parse: [] } }),
-    ]) {
-      const err = await call().catch((e) => e);
-      isDiscordError(404)(err);
-      assert.ok(!err.message.includes(HOOK.token), err.message);
-      assert.ok(!String(err.stack).includes(HOOK.token));
+describe('webhook 端點出錯時，錯誤訊息與 stack 都不含 webhook token（§9）', { timeout: 20000 }, () => {
+  const calls = [
+    ['getWebhook', () => client().getWebhook(HOOK.id, HOOK.token)],
+    ['executeWebhook', () => client().executeWebhook(HOOK, { content: 'x', username: 'claude-1', allowedMentions: { parse: [] } })],
+  ];
+  const failures = [
+    ['404', (rec, res) => sendJson(res, 404, { message: 'Unknown Webhook', code: 10015 })],
+    ['5xx 重試用盡', (rec, res) => sendJson(res, 502, { message: 'bad gateway' })],
+    ['429 超過 60 秒', (rec, res) => sendJson(res, 429, { message: 'rate limited', retry_after: 61 })],
+    ['連線被切斷', (rec) => rec.req.socket.destroy()],
+  ];
+  for (const [label, fail] of failures) {
+    for (const [name, call] of calls) {
+      test(`${name}：${label}`, async () => {
+        serve(fail);
+        const err = await errorOf(call());
+        isDiscordError()(err);
+        assert.ok(!err.message.includes(HOOK.token), err.message);
+        assert.ok(!String(err.stack).includes(HOOK.token));
+        assert.ok(!err.message.includes(BOT_TOKEN));
+      });
     }
-  });
+  }
 });
 
 // ---- 重試 ----
 
-describe('重試（429、5xx、網路錯誤）', () => {
+// 加逾時：實作若沒照 retryBaseMs 或 60 秒上限，測試會變慢而不是卡住。
+describe('重試（429、5xx、網路錯誤）', { timeout: 20000 }, () => {
   test('429 依 retry_after 等待後重試，成功就回傳', async () => {
     let n = 0;
     serve((rec, res) => {
@@ -291,10 +316,12 @@ describe('重試（429、5xx、網路錯誤）', () => {
     assert.equal(requests.length, 6);
   });
 
-  test('429 的 retry_after 超過 60 秒：不等，直接丟 DiscordError', async () => {
+  test('429 的 retry_after 超過 60 秒：不等，直接丟 DiscordError，訊息寫明要等幾秒', async () => {
     serve((rec, res) => sendJson(res, 429, { message: 'rate limited', retry_after: 61 }));
     const t0 = Date.now();
-    await assert.rejects(client().me(), isDiscordError());
+    const err = await client().me().catch((e) => e);
+    isDiscordError()(err);
+    assert.ok(err.message.includes('61'), err.message);
     assert.equal(requests.length, 1);
     assert.ok(Date.now() - t0 < 5000);
   });
@@ -310,18 +337,22 @@ describe('重試（429、5xx、網路錯誤）', () => {
     assert.equal(requests.length, 3);
   });
 
-  test('5xx 一直發生：重試 5 次（共 6 次請求）後丟 DiscordError', async () => {
+  test('5xx 一直發生：重試 5 次（共 6 次請求）後丟 DiscordError；retryBaseMs 小時很快結束', async () => {
     serve((rec, res) => sendJson(res, 502, { message: 'bad gateway' }));
+    const t0 = Date.now();
     await assert.rejects(client().channel('1'), isDiscordError(502));
     assert.equal(requests.length, 6);
+    assert.ok(Date.now() - t0 < 1000, `retryBaseMs 1 卻花了 ${Date.now() - t0} ms`);
   });
 
-  test('退避時間：第 n 次重試等 retryBaseMs × n', async () => {
+  test('退避時間是線性的：第 n 次重試等 retryBaseMs × n', async () => {
     serve((rec, res) => sendJson(res, 500, { message: 'server error' }));
-    const t0 = Date.now();
-    await assert.rejects(client({ retryBaseMs: 20 }).me(), isDiscordError(500));
-    // 20 × (1 + 2 + 3 + 4 + 5) = 300 ms
-    assert.ok(Date.now() - t0 >= 280, `只等了 ${Date.now() - t0} ms`);
+    await assert.rejects(client({ retryBaseMs: 100 }).me(), isDiscordError(500));
+    assert.equal(requests.length, 6);
+    const gaps = requests.slice(1).map((r, i) => r.at - requests[i].at);
+    gaps.forEach((gap, i) => assert.ok(gap >= 100 * (i + 1) - 5, `第 ${i + 1} 次重試只等了 ${gap} ms：${gaps}`));
+    // 線性時第 5 次約 500 ms；指數退避會到 1600 ms。
+    assert.ok(gaps[4] < 900, `第 5 次重試等了 ${gaps[4]} ms，不像線性：${gaps}`);
   });
 
   test('retryBaseMs 預設 1000', async () => {
@@ -332,14 +363,16 @@ describe('重試（429、5xx、網路錯誤）', () => {
       else sendJson(res, 200, { ok: true });
     });
     const t0 = Date.now();
-    await createClient(BOT_TOKEN).me();
+    await createClient(BOT_TOKEN, { apiBase: API }).me();
     assert.ok(Date.now() - t0 >= 950, `只等了 ${Date.now() - t0} ms`);
   });
 
-  test('網路錯誤（連線被切斷）：重試 5 次（共 6 次請求）後丟 DiscordError', async () => {
+  test('網路錯誤（連線被切斷）：重試 5 次（共 6 次請求）後丟 DiscordError；也照 retryBaseMs 退避', async () => {
     serve((rec) => rec.req.socket.destroy());
+    const t0 = Date.now();
     await assert.rejects(client().me(), isDiscordError());
     assert.equal(requests.length, 6);
+    assert.ok(Date.now() - t0 < 1000, `retryBaseMs 1 卻花了 ${Date.now() - t0} ms`);
   });
 
   test('網路錯誤之後恢復：回傳結果', async () => {

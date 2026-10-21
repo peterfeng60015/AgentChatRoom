@@ -1,6 +1,7 @@
 // src/state.js 的單元測試（SPEC §3.3、§5.1、§7.3）。
-// STATE_DIR 在模組載入時決定，所以先把 AGENTCHAT_STATE_DIR 指到暫存目錄再動態 import，
-// 確保不碰真正的 ~/.agentchat。
+// STATE_DIR 在模組載入時決定，所以先把 AGENTCHAT_STATE_DIR 指到暫存目錄再動態 import。
+// 不碰真正的 ~/.agentchat 有三道防護：HOME 也指到暫存、載入後 STATE_DIR 不對就整檔中止、頻道 ID 用假的，
+// 這樣就算實作退化成不讀環境變數，也不會覆寫真實的 agent 狀態或 webhook 快取。
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -13,26 +14,44 @@ const SRC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../.
 const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-state-')));
 const STATE = path.join(tmpRoot, 'state');
 
-const savedStateDir = process.env.AGENTCHAT_STATE_DIR;
-process.env.AGENTCHAT_STATE_DIR = STATE;
+const FAKE_HOME = path.join(tmpRoot, 'home');
+fs.mkdirSync(FAKE_HOME, { recursive: true });
 
-const state = await import(pathToFileURL(path.join(SRC_DIR, 'state.js')).href);
+const savedEnv = { stateDir: process.env.AGENTCHAT_STATE_DIR, home: process.env.HOME, userProfile: process.env.USERPROFILE };
+process.env.AGENTCHAT_STATE_DIR = STATE;
+process.env.HOME = FAKE_HOME;
+process.env.USERPROFILE = FAKE_HOME;
+const restoreEnv = () => {
+  for (const [key, value] of [['AGENTCHAT_STATE_DIR', savedEnv.stateDir], ['HOME', savedEnv.home], ['USERPROFILE', savedEnv.userProfile]]) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+};
+
+const STATE_URL = pathToFileURL(path.join(SRC_DIR, 'state.js')).href;
+const state = await import(STATE_URL);
+if (state.STATE_DIR !== STATE) {
+  // 模組丟錯時 after() 不會執行，所以先自己清掉暫存目錄、還原環境變數。
+  restoreEnv();
+  fs.rmSync(tmpRoot, { recursive: true, force: true });
+  throw new Error(`STATE_DIR 沒有讀 AGENTCHAT_STATE_DIR（得到 ${state.STATE_DIR}），中止整檔以免寫進真正的狀態目錄`);
+}
 const { loadAgent, saveAgent, newAgent, loadWebhook, saveWebhook, clearWebhook, appendLog, downloadDir } = state;
 
 after(() => {
-  if (savedStateDir === undefined) delete process.env.AGENTCHAT_STATE_DIR;
-  else process.env.AGENTCHAT_STATE_DIR = savedStateDir;
+  restoreEnv();
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-const CH = '1562304076115611710';
+// 明顯是假的頻道 ID，不用 config/room.json 裡的真實頻道。
+const CH = '900000000000000001';
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
 const mode = (file) => fs.statSync(file).mode & 0o777;
 
 // §5.1 列出的全部欄位。
 const STATE_FIELDS = [
   'version', 'name', 'vendor', 'model', 'channelId',
-  'role', 'task', 'branch', 'isolation', 'files', 'assigned',
+  'role', 'task', 'branch', 'isolation', 'files', 'assigned', 'assignMessageId', 'assignBody', 'phaseBeforeStop',
   'topic', 'phase', 'cursor', 'discussRound', 'discussLimit', 'ownMessageIds', 'pendingQuestionId',
   'joinedAt', 'lastActivityAt', 'lastProgressAt', 'workStartedAt', 'emptyWaitSince', 'left',
 ];
@@ -43,6 +62,17 @@ const fresh = (over = {}) =>
 
 test('STATE_DIR 讀 AGENTCHAT_STATE_DIR', () => {
   assert.equal(state.STATE_DIR, STATE);
+});
+
+test('沒有 AGENTCHAT_STATE_DIR 時，STATE_DIR 預設是 ~/.agentchat（只比路徑，不寫檔）', async () => {
+  delete process.env.AGENTCHAT_STATE_DIR;
+  try {
+    const s = await import(`${STATE_URL}?default-dir`);
+    assert.equal(s.STATE_DIR, path.join(FAKE_HOME, '.agentchat'));
+    assert.equal(fs.existsSync(path.join(FAKE_HOME, '.agentchat')), false, '載入模組不應建立狀態目錄');
+  } finally {
+    process.env.AGENTCHAT_STATE_DIR = STATE;
+  }
 });
 
 // ---- newAgent（§5.1） ----
@@ -64,7 +94,10 @@ test('newAgent：身分與游標照參數', () => {
 
 test('newAgent：初始值（沒有分工、未指派、沒有議題、lobby、計數 0）', () => {
   const s = fresh();
-  for (const key of ['role', 'task', 'branch', 'isolation', 'files', 'topic', 'discussLimit', 'pendingQuestionId']) {
+  for (const key of [
+    'role', 'task', 'branch', 'isolation', 'files', 'assignMessageId', 'assignBody', 'phaseBeforeStop',
+    'topic', 'discussLimit', 'pendingQuestionId',
+  ]) {
     assert.equal(s[key], null, key);
   }
   assert.equal(s.assigned, false);
@@ -107,16 +140,16 @@ test('saveAgent / loadAgent 來回一致，存在 agents/<channelId>/<名稱>.js
   assert.deepEqual(loadAgent(CH, 'claude-1'), s);
 });
 
-test('saveAgent 覆寫既有狀態，目錄裡不留暫存檔', () => {
-  const s = fresh({ name: 'claude-3' });
+test('saveAgent 覆寫既有狀態，目錄裡不留暫存檔（含 . 開頭的隱藏檔）', () => {
+  const ch = '900000000000000003';
+  const s = fresh({ name: 'claude-3', channelId: ch });
   saveAgent(s);
   s.phase = 'work';
   s.discussRound = 2;
   saveAgent(s);
   saveAgent(s);
-  assert.equal(loadAgent(CH, 'claude-3').phase, 'work');
-  const files = fs.readdirSync(path.join(STATE, 'agents', CH)).filter((f) => f.startsWith('claude-3'));
-  assert.deepEqual(files, ['claude-3.json']);
+  assert.equal(loadAgent(ch, 'claude-3').phase, 'work');
+  assert.deepEqual(fs.readdirSync(path.join(STATE, 'agents', ch)), ['claude-3.json']);
 });
 
 test('saveAgent 原子寫入：先寫同目錄的暫存檔，再改名成狀態檔', () => {
