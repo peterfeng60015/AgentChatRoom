@@ -58,6 +58,25 @@ describe('post 與發文共通處理', () => {
     assert.equal(env.mock.executions.at(-1).payload.content, '【info】 小結\nbranch: x\n\n原樣');
   });
 
+  test('--body-file 讀檔當內文；和位置參數或 - 同時給 → 2；檔案讀不到 → 2', async () => {
+    await joined(env, { phase: 'discussion' });
+    const file = path.join(env.root, 'body.md');
+    fs.writeFileSync(file, '有 "引號" 與 $(不會執行) 的內文\n第二行\n');
+    let r = await env.run(['discuss', '--as', 'claude-1', '--body-file', file]);
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(env.mock.executions.at(-1).payload.content, '[DISCUSS]\n\n有 "引號" 與 $(不會執行) 的內文\n第二行');
+    const before = env.mock.executions.length;
+    r = await env.run(['post', '--as', 'claude-1', '--body-file', file, '另外的內文']);
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /三選一/);
+    r = await env.run(['post', '--as', 'claude-1', '--body-file', file, '-'], { input: 'stdin' });
+    assert.equal(r.code, 2);
+    r = await env.run(['ask', '--as', 'claude-1', '--body-file', path.join(env.root, 'none.md')]);
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /讀不到 --body-file/);
+    assert.equal(env.mock.executions.length, before);
+  });
+
   test('post 只接受 INFO、DISCUSS：其他 agent 標籤 → 結束碼 2 並提示對應指令', async () => {
     await joined(env, { phase: 'work' });
     const before = env.mock.executions.length;

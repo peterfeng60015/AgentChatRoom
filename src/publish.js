@@ -56,9 +56,24 @@ export function readStdin(stream = process.stdin) {
   });
 }
 
-// 內文來源：位置參數；只有位置參數是 `-` 時才讀 stdin。有些 CLI 的 shell 給的是不會關閉的 pipe，
-// 自動讀非 TTY 的 stdin 會一直卡住。沒加引號的多個字會被 shell 拆成多個位置參數，這裡用空白接回去。
+// 發言類指令共用的 --body-file 選項與說明。
+export const BODY_OPTIONS = { 'body-file': { type: 'string' } };
+export const BODY_SOURCE_HELP =
+  '內文三選一：位置參數；--body-file <路徑>（建議：先用自己的寫檔工具寫進暫存檔，免去引號跳脫與重導向）；位置參數是 - 時讀 stdin。';
+
+// 內文來源三選一（§6.2）：位置參數、--body-file、位置參數是 `-` 時讀 stdin。不自動讀非 TTY 的 stdin：
+// 有些 CLI 的 shell 給的是不會關閉的 pipe，會一直卡住。沒加引號的多個字會被 shell 拆開，這裡用空白接回去。
 export async function readBody(ctx, positionals = ctx.positionals) {
+  const file = ctx.values['body-file'];
+  if (file !== undefined) {
+    if (positionals.length) throw new UserError('內文只能三選一：位置參數、--body-file、-（stdin），不能同時給');
+    const abs = path.resolve(file);
+    try {
+      return fs.readFileSync(abs, 'utf8').trim();
+    } catch {
+      throw new UserError(`讀不到 --body-file：${abs}`);
+    }
+  }
   if (positionals.length === 1 && positionals[0] === '-') return (await readStdin(ctx.stdin)).trim();
   return positionals.join(' ').trim();
 }

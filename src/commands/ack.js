@@ -1,10 +1,11 @@
-import { publish, publishResult, readBody } from '../publish.js';
+import { BODY_OPTIONS, BODY_SOURCE_HELP, publish, publishResult, readBody } from '../publish.js';
 import { requireAgent } from '../context.js';
 
 export const summary = '發 [ACK] 回覆收到指派與自己的理解，只在 discussion 階段可用';
 export const usage = 'agentchat ack --as <名稱> [內文|-]';
-export const options = {};
-export const details = ['欄位 role、branch 取自本機狀態；內文寫你對分工的理解。'];
+export const options = { ...BODY_OPTIONS };
+export const details = [
+  BODY_SOURCE_HELP,'欄位 role、branch 取自本機狀態；內文寫你對分工的理解。'];
 
 export async function run(ctx) {
   const state = requireAgent(ctx);

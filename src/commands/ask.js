@@ -1,9 +1,10 @@
-import { publish, publishResult, readBody } from '../publish.js';
+import { BODY_OPTIONS, BODY_SOURCE_HELP, publish, publishResult, readBody } from '../publish.js';
 
 export const summary = '發 [QUESTION] 向主導者提問，會真的 @ 主導者';
 export const usage = 'agentchat ask --as <名稱> [--file <路徑>]... <問題|->';
-export const options = { file: { type: 'string', multiple: true } };
-export const details = ['送出後記下待答問題；接著用 wait --until mention 等主導者回答（[ANSWER] 或回覆這則訊息）。'];
+export const options = { ...BODY_OPTIONS, file: { type: 'string', multiple: true } };
+export const details = [
+  BODY_SOURCE_HELP,'送出後記下待答問題；接著用 wait --until mention 等主導者回答（[ANSWER] 或回覆這則訊息）。'];
 
 export async function run(ctx) {
   const room = ctx.room;

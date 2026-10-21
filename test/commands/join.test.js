@@ -96,10 +96,15 @@ describe('join', () => {
     assert.equal(webhookMessages(env.mock).filter((m) => m.content.startsWith('[JOIN]')).length, 2);
   });
 
-  test('--resume 但本機沒有狀態：照一般流程進房', async () => {
-    const r = await env.run(['join', '--as', 'claude-1', '--vendor', 'claude', '--resume']);
-    assert.equal(r.code, 0, r.stderr);
-    assert.match(r.stdout, /^已進房/);
+  test('--resume 但沒有可接手的身分（沒有狀態檔或已 leave）→ 結束碼 3，不發訊息', async () => {
+    let r = await env.run(['join', '--as', 'claude-1', '--vendor', 'claude', '--resume']);
+    assert.equal(r.code, 3);
+    assert.match(r.stderr, /沒有可接手的身分，請不帶 --resume 進房/);
+    assert.equal(env.mock.messages.length, 0);
+    await env.join('claude-1');
+    await env.run(['leave', '--as', 'claude-1']);
+    r = await env.run(['join', '--as', 'claude-1', '--vendor', 'claude', '--resume']);
+    assert.equal(r.code, 3);
   });
 
   test('已 leave 的狀態再 join：建立新狀態並發 [JOIN]', async () => {
