@@ -107,6 +107,7 @@ function makeState(over = {}) {
     branch: null,
     isolation: null,
     files: null,
+    assigned: false,
     topic: null,
     phase: 'lobby',
     cursor: '1100000000000000000',
@@ -124,9 +125,8 @@ function makeState(over = {}) {
   };
 }
 
-// SPEC 沒規定 ownMessageIds 從 self 還是 opts 傳入，兩邊都給，讓測試只驗語意。
-const optsFor = (self) => ({ webhookId: WEBHOOK_ID, ownMessageIds: self?.ownMessageIds ?? [] });
-const norm = (raw, self) => normalize(raw, ROOM, self, optsFor(self));
+// §7.1：opts 只帶 webhookId；「回覆我的訊息」由 normalize 從 self.ownMessageIds 判斷。
+const norm = (raw, self) => normalize(raw, ROOM, self, { webhookId: WEBHOOK_ID });
 
 // wait 的流程：先用套用前的狀態 normalize 全部累積的訊息，再依序 applyDirectives。
 function apply(state, raws) {
@@ -134,7 +134,6 @@ function apply(state, raws) {
   return applyDirectives(state, messages, ROOM);
 }
 
-const isCleared = (v) => v == null || v === '' || (Array.isArray(v) && v.length === 0);
 const sorted = (a) => [...a].sort();
 
 // ---- §4.2、§4.3 清單與常數 ----
@@ -279,6 +278,18 @@ describe('parseMessage（§4.1）', () => {
     assert.deepEqual(r.fields, { role: '前端', task: '寫登入頁' });
   });
 
+  test('冒號前後可以沒有空白', () => {
+    const r = parseMessage('[TOPIC] t\nrepo：/path\nbase:main\nrounds:2\n\n內文');
+    assert.deepEqual(r.fields, { repo: '/path', base: 'main', rounds: '2' });
+    assert.equal(r.body, '內文');
+  });
+
+  test('欄位值可以是空字串', () => {
+    const r = parseMessage('[ACK]\nbranch:\nrole: 前端\n\n理解');
+    assert.deepEqual(r.fields, { branch: '', role: '前端' });
+    assert.equal(r.body, '理解');
+  });
+
   test('欄位 key 不分大小寫，存成小寫', () => {
     const r = parseMessage('[ASSIGN] @claude-1\nRole: 前端\nBRANCH: feat/login');
     assert.deepEqual(r.fields, { role: '前端', branch: 'feat/login' });
@@ -399,29 +410,61 @@ describe('extractMentions（§4.4）', () => {
 
   test('標點之後', () => {
     for (const s of ['（@claude-1）', '(@claude-1)', '好，@claude-1 看', '、@claude-1', '「@claude-1」']) {
-      assert.ok(extractMentions(s).names.includes('claude-1'), s);
+      assert.deepEqual(extractMentions(s).names, ['claude-1'], s);
     }
   });
 
-  test('名稱後面接標點不併入名稱', () => {
-    for (const s of ['@claude-1，請看', '@claude-1。', '@claude-1: 請看', '@claude-1.', '@claude-1）']) {
-      assert.ok(extractMentions(s).names.includes('claude-1'), s);
+  test('中文緊接在 @ 前面也算', () => {
+    assert.deepEqual(extractMentions('請@claude-1看').names, ['claude-1']);
+    assert.deepEqual(extractMentions('麻煩＠前端，看一下').names, ['前端']);
+  });
+
+  test('email 帳號字元（英數字、_、.、+、-）緊接在 @ 前面不算', () => {
+    for (const s of ['peter@example.com', 'a@claude-1', '1@claude-1', 'x_@claude-1', 'x.@claude-1', 'x+@claude-1', 'x-@claude-1', 'Z@前端 看']) {
+      assert.deepEqual(extractMentions(s).names, [], s);
     }
   });
 
-  test('email 不算 mention', () => {
-    assert.deepEqual(extractMentions('寄到 peter@example.com 或 a@claude-1').names, []);
+  test('英數字開頭的 token 取最長的 [A-Za-z0-9_-]', () => {
+    for (const [s, want] of [
+      ['@claude-1請看', 'claude-1'],
+      ['@claude-1，請看', 'claude-1'],
+      ['@claude-1。', 'claude-1'],
+      ['@claude-1: 請看', 'claude-1'],
+      ['@claude-1.', 'claude-1'],
+      ['@claude-1）', 'claude-1'],
+      ['@qa工程師 看', 'qa'],
+      ['@here有人嗎', 'here'],
+      ['@Claude_2-x 看', 'claude_2-x'],
+    ]) {
+      assert.deepEqual(extractMentions(s).names, [want], s);
+    }
   });
 
-  test('中文角色，後面接空白、標點或結尾', () => {
-    assert.ok(extractMentions('@前端 請看').names.includes('前端'));
-    assert.ok(extractMentions('@前端，請看').names.includes('前端'));
-    assert.ok(extractMentions('請 @前端').names.includes('前端'));
-    assert.ok(extractMentions('＠後端工程師 請看').names.includes('後端工程師'));
+  test('非英數字開頭的 token 取到下一個空白或標點', () => {
+    for (const [s, want] of [
+      ['@前端 請看', '前端'],
+      ['@前端，請看', '前端'],
+      ['@前端」', '前端'],
+      ['@前端!', '前端'],
+      ['請 @前端', '前端'],
+      ['＠後端工程師 請看', '後端工程師'],
+      ['@前端請看', '前端請看'],
+    ]) {
+      assert.deepEqual(extractMentions(s).names, [want], s);
+    }
   });
 
   test('@全體', () => {
-    assert.ok(extractMentions('@全體 注意').names.includes('全體'));
+    assert.deepEqual(extractMentions('@全體 注意').names, ['全體']);
+  });
+
+  test('一則裡多個 mention 依序列出', () => {
+    assert.deepEqual(extractMentions('@claude-1 和 @前端，還有 @全體').names, ['claude-1', '前端', '全體']);
+  });
+
+  test('@ 後面沒有字不算', () => {
+    assert.deepEqual(extractMentions('@ 你好').names, []);
   });
 
   test('沒有 mention', () => {
@@ -440,17 +483,27 @@ describe('isMentioned（§4.4「提到我」的文字部分）', () => {
     assert.equal(isMentioned('＠claude-1 請看', self), true);
   });
 
+  test('名稱前後緊接中文也算', () => {
+    assert.equal(isMentioned('請@claude-1看', self), true);
+    assert.equal(isMentioned('@claude-1請看', self), true);
+  });
+
   test('mention 在內文任何一行都算', () => {
     assert.equal(isMentioned('[DISCUSS] 看法\n\n第一行\n第二行 @claude-1', self), true);
   });
 
   test('@ 我的中文角色', () => {
     assert.equal(isMentioned('@前端 請看', self), true);
-    assert.equal(isMentioned('麻煩 ＠前端，看一下', self), true);
+    assert.equal(isMentioned('麻煩＠前端，看一下', self), true);
   });
 
-  test('角色後面沒接空白或標點就分不出邊界，不算', () => {
+  test('中文角色後面直接接中文時 token 不同，不算', () => {
     assert.equal(isMentioned('@前端請看', self), false);
+  });
+
+  test('英文角色後面接中文：token 是英文部分，算', () => {
+    assert.equal(isMentioned('@qa工程師 看一下', { name: 'claude-1', role: 'qa' }), true);
+    assert.equal(isMentioned('@QA 看一下', { name: 'claude-1', role: 'qa' }), true);
   });
 
   for (const word of ['all', 'agents', 'everyone', 'here', '全體']) {
@@ -460,6 +513,10 @@ describe('isMentioned（§4.4「提到我」的文字部分）', () => {
     });
   }
 
+  test('廣播字後面接中文也算（@here有人嗎）', () => {
+    assert.equal(isMentioned('@here有人嗎', self), true);
+  });
+
   test('@ 別人、名稱前綴相同的別人都不算', () => {
     assert.equal(isMentioned('@claude-2 請看', self), false);
     assert.equal(isMentioned('@claude-10 請看', self), false);
@@ -468,7 +525,7 @@ describe('isMentioned（§4.4「提到我」的文字部分）', () => {
   });
 
   test('email 形式不算', () => {
-    assert.equal(isMentioned('a@claude-1 b@前端', self), false);
+    assert.equal(isMentioned('a@claude-1 b@前端 x.@claude-1', self), false);
   });
 
   test('沒有角色時，只看名稱與廣播', () => {
@@ -518,15 +575,17 @@ describe('targetsOf（只看第一行）', () => {
 
 // ---- §4.4 isTargeted ----
 
-describe('isTargeted（§4.4「指令對我生效」）', () => {
-  const self = makeState({ role: '前端' });
-  const t = (raw) => isTargeted(norm(raw, self), self);
+describe('isTargeted（§4.4「指令對我生效」、§7.1）', () => {
+  // 已被指派、在討論階段、角色是「前端」的 agent。
+  const self = makeState({ role: '前端', assigned: true, phase: 'discussion' });
+  const t = (raw, s = self) => isTargeted(norm(raw, s), s);
 
   test('TOPIC、CLOSE 一律生效，即使第一行 @ 別人', () => {
     assert.equal(t(modRaw('[TOPIC] 議題')), true);
     assert.equal(t(modRaw('[TOPIC] @claude-2 議題')), true);
     assert.equal(t(modRaw('[CLOSE]')), true);
     assert.equal(t(modRaw('[CLOSE] @claude-2')), true);
+    assert.equal(t(modRaw('[TOPIC] 議題'), makeState({ phase: 'lobby' })), true);
   });
 
   test('ASSIGN：第一行 @ 我的名稱或廣播', () => {
@@ -534,6 +593,7 @@ describe('isTargeted（§4.4「指令對我生效」）', () => {
     assert.equal(t(modRaw('[ASSIGN] ＠Claude-1\nrole: 前端')), true);
     assert.equal(t(modRaw('[ASSIGN] @全體\nrole: 評審')), true);
     assert.equal(t(modRaw('[ASSIGN] @all\nrole: 評審')), true);
+    assert.equal(t(modRaw('[ASSIGN] @claude-2 @claude-1\nrole: 評審')), true);
   });
 
   test('ASSIGN：@ 別人、只 @ 我的角色、只在第二行之後 @ 我，都不生效', () => {
@@ -563,11 +623,6 @@ describe('isTargeted（§4.4「指令對我生效」）', () => {
   });
 
   for (const tag of ['GO', 'CONTINUE', 'STOP']) {
-    test(`${tag}：第一行沒有 @ 就對所有人生效`, () => {
-      assert.equal(t(modRaw(`[${tag}]`)), true);
-      assert.equal(t(modRaw(`[${tag}]\n\n@claude-2 你先`)), true);
-    });
-
     test(`${tag}：第一行有 @ 就只對被 @ 的名稱、角色、廣播生效`, () => {
       assert.equal(t(modRaw(`[${tag}] @claude-1`)), true);
       assert.equal(t(modRaw(`[${tag}] @claude-2 @CLAUDE-1`)), true);
@@ -577,11 +632,69 @@ describe('isTargeted（§4.4「指令對我生效」）', () => {
       assert.equal(t(modRaw(`[${tag}] @claude-2`)), false);
       assert.equal(t(modRaw(`[${tag}] @後端`)), false);
     });
+
+    test(`${tag}：第一行有 @ 時不看階段與是否被指派，left 除外`, () => {
+      for (const phase of ['lobby', 'topic', 'discussion', 'work', 'done', 'stopped', 'closed', 'idle']) {
+        assert.equal(t(modRaw(`[${tag}] @claude-1`), makeState({ assigned: false, phase })), true, phase);
+      }
+      const left = makeState({ assigned: true, phase: 'left', left: true });
+      assert.equal(t(modRaw(`[${tag}] @claude-1`), left), false);
+      assert.equal(t(modRaw(`[${tag}] @全體`), left), false);
+    });
   }
+
+  for (const tag of ['GO', 'CONTINUE']) {
+    test(`${tag}：第一行沒有 @ 時，只對已被指派且在 discussion 或 stopped 的 agent 生效`, () => {
+      assert.equal(t(modRaw(`[${tag}]`), makeState({ assigned: true, phase: 'discussion' })), true);
+      assert.equal(t(modRaw(`[${tag}]`), makeState({ assigned: true, phase: 'stopped' })), true);
+      // 第二行之後的 @ 不算「第一行有 @」。
+      assert.equal(t(modRaw(`[${tag}]\n\n@claude-2 你先`), makeState({ assigned: true, phase: 'discussion' })), true);
+      // 沒被指派的 agent 不受影響。
+      for (const phase of ['lobby', 'topic', 'stopped']) {
+        assert.equal(t(modRaw(`[${tag}]`), makeState({ assigned: false, phase })), false, `未指派 ${phase}`);
+      }
+      // 已被指派，但階段不是 discussion 或 stopped。
+      for (const phase of ['work', 'done', 'closed', 'idle']) {
+        assert.equal(t(modRaw(`[${tag}]`), makeState({ assigned: true, phase })), false, `已指派 ${phase}`);
+      }
+      assert.equal(t(modRaw(`[${tag}]`), makeState({ assigned: true, phase: 'left', left: true })), false);
+    });
+  }
+
+  test('STOP：第一行沒有 @ 時，對 closed、idle、left 以外的所有階段生效', () => {
+    for (const phase of ['lobby', 'topic', 'discussion', 'work', 'done', 'stopped']) {
+      assert.equal(t(modRaw('[STOP]'), makeState({ assigned: false, phase })), true, phase);
+    }
+    for (const phase of ['closed', 'idle']) {
+      assert.equal(t(modRaw('[STOP]'), makeState({ assigned: true, phase })), false, phase);
+    }
+    assert.equal(t(modRaw('[STOP]'), makeState({ assigned: true, phase: 'left', left: true })), false);
+  });
 
   test('CONTINUE 的數字與 @ 同時出現', () => {
     assert.equal(t(modRaw('[CONTINUE] 2 @claude-1')), true);
     assert.equal(t(modRaw('[CONTINUE] 2 @claude-2')), false);
+  });
+
+  test('msg.kind 存在且不是 moderator：一律不生效', () => {
+    for (const raw of [
+      agentRaw('claude-2 (後端)', '[GO] @claude-1'),
+      agentRaw('claude-2 (後端)', '[ASSIGN] @claude-1\nrole: 後端'),
+      humanRaw('[TOPIC] 假議題'),
+      botRaw('[CLOSE]'),
+      otherWebhookRaw('[STOP]'),
+    ]) {
+      assert.equal(t(raw), false, raw.content);
+    }
+  });
+
+  test('沒有 kind 的手工物件只看標籤與第一行', () => {
+    const msg = (content) => ({ ...parseMessage(content), content });
+    assert.equal(isTargeted(msg('[GO] @claude-1'), self), true);
+    assert.equal(isTargeted(msg('[GO] @claude-2'), self), false);
+    assert.equal(isTargeted(msg('[CLOSE]'), self), true);
+    assert.equal(isTargeted(msg('[ASSIGN] @claude-1\nrole: x'), self), true);
+    assert.equal(isTargeted(msg('[ASSIGN] @claude-2\nrole: x'), self), false);
   });
 });
 
@@ -602,6 +715,16 @@ describe('resolveMentions（§4.4 主導者 mention）', () => {
 
   test('出現多次全部換掉', () => {
     assert.equal(resolveMentions('@moderator 和 @主導者', ROOM), `${tag} 和 ${tag}`);
+  });
+
+  test('中文緊接在 @ 前面也換；英文 token 後面接中文也換', () => {
+    assert.equal(resolveMentions('請＠主導者 決定', ROOM), `請${tag} 決定`);
+    assert.equal(resolveMentions('請@moderator確認', ROOM), `請${tag}確認`);
+  });
+
+  test('email 形式、較長的 token 不換', () => {
+    assert.equal(resolveMentions('寄 a@moderator 或 x.@主導者', ROOM), '寄 a@moderator 或 x.@主導者');
+    assert.equal(resolveMentions('@moderators 你好', ROOM), '@moderators 你好');
   });
 
   test('沒有主導者 mention 時原樣回傳，其他 @ 不動', () => {
@@ -663,25 +786,30 @@ describe('isSelfName（§4.5 self 的名稱判斷）', () => {
   });
 });
 
-describe('sanitizeRole', () => {
-  test('去掉半形與全形括號', () => {
+describe('sanitizeRole（§7.1）', () => {
+  test('刪除（不是換成空白）半形與全形括號', () => {
     assert.equal(sanitizeRole('(前端)'), '前端');
     assert.equal(sanitizeRole('（前端）'), '前端');
-    assert.equal(sanitizeRole('前端 (主)'), '前端 主');
+    assert.equal(sanitizeRole('前端(主)'), '前端主');
+    assert.equal(sanitizeRole('前端（主）'), '前端主');
   });
 
-  test('去掉 @、#、:、反引號', () => {
+  test('刪除 @、＠、#、:、：、反引號', () => {
     assert.equal(sanitizeRole('@前端'), '前端');
+    assert.equal(sanitizeRole('＠前端'), '前端');
     assert.equal(sanitizeRole('#qa'), 'qa');
-    assert.equal(sanitizeRole('role : 前端'), 'role 前端');
+    assert.equal(sanitizeRole('role:前端'), 'role前端');
+    assert.equal(sanitizeRole('role：前端'), 'role前端');
     assert.equal(sanitizeRole('`dev`'), 'dev');
   });
 
-  test('去掉換行並合併空白', () => {
-    assert.equal(sanitizeRole('前端 \n 後端'), '前端 後端');
-    assert.equal(sanitizeRole('前端 \r\n 後端'), '前端 後端');
-    assert.equal(sanitizeRole('a    b'), 'a b');
+  test('換行與連續空白換成一個 -，去掉頭尾的 -', () => {
+    assert.equal(sanitizeRole('QA Lead'), 'QA-Lead');
+    assert.equal(sanitizeRole('a    b'), 'a-b');
+    assert.equal(sanitizeRole('前端 \n 後端'), '前端-後端');
+    assert.equal(sanitizeRole('前端\r\n後端'), '前端-後端');
     assert.equal(sanitizeRole('  前端  '), '前端');
+    assert.equal(sanitizeRole('前端 (主)'), '前端-主');
   });
 
   test('截到 40 字（先清理再截）', () => {
@@ -690,11 +818,9 @@ describe('sanitizeRole', () => {
   });
 
   test('空字串或清理後為空回 null', () => {
-    assert.equal(sanitizeRole(''), null);
-    assert.equal(sanitizeRole(null), null);
-    assert.equal(sanitizeRole(undefined), null);
-    assert.equal(sanitizeRole('()（）'), null);
-    assert.equal(sanitizeRole(' @ # : ` '), null);
+    for (const v of ['', null, undefined, '()（）', ' @ # : ` ', '   ', '\n']) {
+      assert.equal(sanitizeRole(v), null, JSON.stringify(v));
+    }
   });
 });
 
@@ -732,7 +858,8 @@ describe('authorKind（§4.5）', () => {
     assert.equal(authorKind(humanRaw('hi'), ROOM, self, opts), 'human');
   });
 
-  test('不知道本房 webhook ID 時，webhook 訊息視為 agent', () => {
+  test('不知道本房 webhook ID 時，webhook 訊息不歸為 bot：名稱是我的是 self，其餘是 agent', () => {
+    assert.equal(authorKind(agentRaw('claude-1 (前端)', 'hi'), ROOM, self, {}), 'self');
     assert.equal(authorKind(agentRaw('claude-2', 'hi'), ROOM, self, {}), 'agent');
     assert.equal(authorKind(otherWebhookRaw('hi'), ROOM, self, {}), 'agent');
   });
@@ -747,7 +874,7 @@ describe('authorKind（§4.5）', () => {
 // ---- §7.1 normalize ----
 
 describe('normalize（§7.1）', () => {
-  const self = makeState({ role: '前端' });
+  const self = makeState({ role: '前端', assigned: true, phase: 'discussion' });
 
   test('回傳 SPEC 列出的全部欄位', () => {
     const m = norm(modRaw('[TOPIC] 議題\nrepo: /x\n\n說明'), self);
@@ -829,6 +956,18 @@ describe('normalize（§7.1）', () => {
     assert.equal(norm(agentRaw('claude-1 (前端)', 'hi'), self).kind, 'self');
     assert.equal(norm(otherWebhookRaw('hi'), self).kind, 'bot');
     assert.equal(norm(humanRaw('hi'), self).kind, 'human');
+  });
+
+  test('mentionsMe：回覆我的待答問題，即使它已掉出 ownMessageIds', () => {
+    const OLD_Q = '1100000000000000099';
+    const s = makeState({ ownMessageIds: [OWN_A], pendingQuestionId: OLD_Q });
+    assert.equal(norm(modRaw('可以', replyTo(OLD_Q)), s).mentionsMe, true);
+  });
+
+  test('targetsMe 只有主導者訊息可能為 true', () => {
+    assert.equal(norm(agentRaw('claude-2', '[GO] @claude-1'), self).targetsMe, false);
+    assert.equal(norm(humanRaw('[TOPIC] 假議題'), self).targetsMe, false);
+    assert.equal(norm(otherWebhookRaw('[CLOSE]'), self).targetsMe, false);
   });
 
   test('self 可以是 null', () => {
@@ -964,6 +1103,9 @@ describe('splitMessage（§7.1）', () => {
 
 // ---- §4.2、§5 applyDirectives ----
 
+// 已被指派、在討論階段的 agent（第一行沒有 @ 的 [GO]、[CONTINUE] 只對這種 agent 生效）。
+const assignedState = (over = {}) => makeState({ assigned: true, role: '前端', phase: 'discussion', ...over });
+
 describe('applyDirectives：TOPIC（§4.2、§5.2）', () => {
   test('lobby 收到 TOPIC：設定議題、階段改為 topic', () => {
     const state = makeState();
@@ -980,17 +1122,21 @@ describe('applyDirectives：TOPIC（§4.2、§5.2）', () => {
     for (const n of notes) assert.equal(typeof n, 'string');
   });
 
-  test('TOPIC 清除角色與分工', () => {
-    const state = makeState({
-      phase: 'work', role: '前端', task: '寫 UI', branch: 'feat/ui', isolation: 'shared', files: 'src/ui',
-      topic: { id: '1', title: '舊', fields: {}, body: '' },
+  test('TOPIC 清除分工、待答問題、進度時間，assigned 設回 false，討論計數與上限重置', () => {
+    const state = assignedState({
+      phase: 'work', task: '寫 UI', branch: 'feat/ui', isolation: 'shared', files: ['src/ui'],
+      pendingQuestionId: OWN_B, lastProgressAt: ISO(T0 - 60_000), workStartedAt: ISO(T0 - 600_000),
+      discussRound: 2, discussLimit: 5,
+      topic: { id: '1', title: '舊', fields: { rounds: '4' }, body: '' },
     });
     apply(state, [modRaw('[TOPIC] 新議題')]);
     assert.equal(state.phase, 'topic');
     assert.equal(state.topic.title, '新議題');
-    for (const key of ['role', 'task', 'branch', 'isolation', 'files']) {
-      assert.ok(isCleared(state[key]), `${key} 沒清除：${JSON.stringify(state[key])}`);
+    for (const key of ['role', 'task', 'branch', 'isolation', 'files', 'pendingQuestionId', 'lastProgressAt', 'workStartedAt', 'discussLimit']) {
+      assert.equal(state[key], null, key);
     }
+    assert.equal(state.assigned, false);
+    assert.equal(state.discussRound, 0);
   });
 
   test('TOPIC 第一行 @ 別人也對我生效', () => {
@@ -1001,19 +1147,31 @@ describe('applyDirectives：TOPIC（§4.2、§5.2）', () => {
 });
 
 describe('applyDirectives：ASSIGN', () => {
-  test('對我生效：設定角色與分工，階段改為 discussion，討論計數歸零', () => {
+  test('對我生效：設定角色與分工、assigned 為 true、階段改為 discussion、討論計數歸零', () => {
     const state = makeState({ phase: 'topic', discussRound: 2 });
     const notes = apply(state, [
-      modRaw('[ASSIGN] @claude-1\nrole: 前端\ntask: 寫登入頁\nbranch: feat/login\nisolation: shared\nfiles: src/ui, src/css\n\n細節'),
+      modRaw('[ASSIGN] @claude-1\nrole: 前端\ntask: 寫登入頁\nbranch: feat/login\nisolation: shared\nfiles: src/ui, src/css，docs/a.md\n\n細節'),
     ]);
     assert.equal(state.phase, 'discussion');
+    assert.equal(state.assigned, true);
     assert.equal(state.role, '前端');
     assert.equal(state.task, '寫登入頁');
     assert.equal(state.branch, 'feat/login');
     assert.equal(state.isolation, 'shared');
-    assert.ok(String(state.files).includes('src/ui') && String(state.files).includes('src/css'));
     assert.equal(state.discussRound, 0);
     assert.ok(notes.length >= 1);
+  });
+
+  test('files 依半形或全形逗號切開、去空白，存成字串陣列', () => {
+    const state = makeState({ phase: 'topic' });
+    apply(state, [modRaw('[ASSIGN] @claude-1\nrole: 前端\nisolation: shared\nfiles: src/ui, src/css，docs/a.md ，  README.md')]);
+    assert.deepEqual(state.files, ['src/ui', 'src/css', 'docs/a.md', 'README.md']);
+  });
+
+  test('沒有 files 欄位時 files 是 null', () => {
+    const state = makeState({ phase: 'topic', files: ['舊的'] });
+    apply(state, [modRaw('[ASSIGN] @claude-1\nrole: 前端\nbranch: feat/login')]);
+    assert.equal(state.files, null);
   });
 
   test('有 branch、沒寫 isolation 時預設 worktree', () => {
@@ -1026,6 +1184,7 @@ describe('applyDirectives：ASSIGN', () => {
     const state = makeState({ phase: 'topic' });
     apply(state, [modRaw('[ASSIGN] @全體\nrole: 評審')]);
     assert.equal(state.phase, 'discussion');
+    assert.equal(state.assigned, true);
     assert.equal(state.role, '評審');
   });
 
@@ -1033,6 +1192,7 @@ describe('applyDirectives：ASSIGN', () => {
     const state = makeState({ phase: 'topic' });
     apply(state, [modRaw('[ASSIGN] @claude-2\nrole: 後端\ntask: API\nbranch: feat/api')]);
     assert.equal(state.phase, 'topic');
+    assert.equal(state.assigned, false);
     assert.equal(state.role, null);
     assert.equal(state.task, null);
     assert.equal(state.branch, null);
@@ -1043,43 +1203,57 @@ describe('applyDirectives：ASSIGN', () => {
     apply(state, [modRaw('[ASSIGN] @前端\nrole: 後端')]);
     assert.equal(state.phase, 'topic');
     assert.equal(state.role, '前端');
+    assert.equal(state.assigned, false);
   });
 
   test('只在內文 @ 我：不生效', () => {
     const state = makeState({ phase: 'topic' });
     apply(state, [modRaw('[ASSIGN] 分工\nrole: 前端\n\n@claude-1 負責')]);
     assert.equal(state.phase, 'topic');
+    assert.equal(state.assigned, false);
   });
 });
 
 describe('applyDirectives：GO、CONTINUE、STOP、CLOSE', () => {
-  test('GO：階段改為 work', () => {
-    const state = makeState({ phase: 'discussion', role: '前端' });
+  test('GO：已指派、討論中的 agent 階段改為 work', () => {
+    const state = assignedState();
     const notes = apply(state, [modRaw('[GO]')]);
     assert.equal(state.phase, 'work');
     assert.ok(notes.length >= 1);
   });
 
-  test('GO 只 @ 別人：不生效；@ 我的角色或廣播：生效', () => {
-    let state = makeState({ phase: 'discussion', role: '前端' });
+  test('GO 沒有 @：沒被指派的 agent 不受影響', () => {
+    const state = makeState({ phase: 'topic', assigned: false });
+    apply(state, [modRaw('[GO]')]);
+    assert.equal(state.phase, 'topic');
+  });
+
+  test('GO 只 @ 別人：不生效；@ 我的角色或廣播：生效；只在第二行 @ 別人：照第一行沒 @ 處理', () => {
+    let state = assignedState();
     apply(state, [modRaw('[GO] @claude-2')]);
     assert.equal(state.phase, 'discussion');
 
-    state = makeState({ phase: 'discussion', role: '前端' });
+    state = assignedState();
     apply(state, [modRaw('[GO] @前端')]);
     assert.equal(state.phase, 'work');
 
-    state = makeState({ phase: 'discussion', role: '前端' });
+    state = assignedState();
     apply(state, [modRaw('[GO] @全體')]);
     assert.equal(state.phase, 'work');
 
-    state = makeState({ phase: 'discussion', role: '前端' });
+    state = assignedState();
     apply(state, [modRaw('[GO]\n\n@claude-2 你負責收尾')]);
     assert.equal(state.phase, 'work');
   });
 
-  test('CONTINUE n：階段改為 discussion、計數歸零、discussLimit 設為 n', () => {
-    const state = makeState({ phase: 'work', discussRound: 3, discussLimit: null });
+  test('GO @我：沒被指派也生效（第一行有 @ 不看階段）', () => {
+    const state = makeState({ phase: 'topic', assigned: false });
+    apply(state, [modRaw('[GO] @claude-1')]);
+    assert.equal(state.phase, 'work');
+  });
+
+  test('CONTINUE n：階段 discussion、計數歸零、discussLimit 設為 n', () => {
+    const state = assignedState({ discussRound: 3, discussLimit: null });
     const notes = apply(state, [modRaw('[CONTINUE] 2')]);
     assert.equal(state.phase, 'discussion');
     assert.equal(state.discussRound, 0);
@@ -1087,16 +1261,36 @@ describe('applyDirectives：GO、CONTINUE、STOP、CLOSE', () => {
     assert.ok(notes.length >= 1);
   });
 
-  test('CONTINUE n 同時 @ 我', () => {
-    const state = makeState({ phase: 'discussion', discussRound: 3 });
+  test('CONTINUE 的 n 是標題裡第一個整數，在 @ 前後都可以', () => {
+    let state = assignedState({ discussRound: 3 });
     apply(state, [modRaw('[CONTINUE] 4 @claude-1')]);
     assert.equal(state.discussLimit, 4);
     assert.equal(state.discussRound, 0);
+
+    state = assignedState({ discussRound: 3 });
+    apply(state, [modRaw('[CONTINUE] @claude-1 3')]);
+    assert.equal(state.discussLimit, 3);
+  });
+
+  test('CONTINUE n @我：從 work 回到 discussion', () => {
+    const state = assignedState({ phase: 'work', discussRound: 3 });
+    apply(state, [modRaw('[CONTINUE] 2 @claude-1')]);
+    assert.equal(state.phase, 'discussion');
+    assert.equal(state.discussLimit, 2);
+    assert.equal(state.discussRound, 0);
+  });
+
+  test('CONTINUE 沒有 @：work 階段的 agent 不受影響', () => {
+    const state = assignedState({ phase: 'work', discussRound: 3, discussLimit: null });
+    apply(state, [modRaw('[CONTINUE] 2')]);
+    assert.equal(state.phase, 'work');
+    assert.equal(state.discussRound, 3);
+    assert.equal(state.discussLimit, null);
   });
 
   test('CONTINUE 沒寫 n：上限回到議題的 rounds', () => {
-    const state = makeState({
-      phase: 'discussion', discussRound: 3, discussLimit: 7,
+    const state = assignedState({
+      discussRound: 3, discussLimit: 7,
       topic: { id: '1', title: 't', fields: { rounds: '5' }, body: '' },
     });
     apply(state, [modRaw('[CONTINUE]')]);
@@ -1106,8 +1300,8 @@ describe('applyDirectives：GO、CONTINUE、STOP、CLOSE', () => {
   });
 
   test('CONTINUE 沒寫 n、議題也沒 rounds：上限回到 maxDiscussionRounds', () => {
-    const state = makeState({
-      phase: 'discussion', discussRound: 3, discussLimit: 7,
+    const state = assignedState({
+      discussRound: 3, discussLimit: 7,
       topic: { id: '1', title: 't', fields: {}, body: '' },
     });
     apply(state, [modRaw('[CONTINUE]')]);
@@ -1115,33 +1309,45 @@ describe('applyDirectives：GO、CONTINUE、STOP、CLOSE', () => {
   });
 
   test('CONTINUE 只 @ 別人：不生效', () => {
-    const state = makeState({ phase: 'discussion', discussRound: 3, discussLimit: null });
+    const state = assignedState({ discussRound: 3, discussLimit: null });
     apply(state, [modRaw('[CONTINUE] 2 @claude-2')]);
     assert.equal(state.discussRound, 3);
     assert.equal(state.discussLimit, null);
   });
 
-  test('STOP：階段改為 stopped；只 @ 別人時不生效', () => {
-    let state = makeState({ phase: 'work' });
+  test('STOP：階段改為 stopped；@ 我也一樣；只 @ 別人時不生效', () => {
+    let state = assignedState({ phase: 'work' });
     const notes = apply(state, [modRaw('[STOP]')]);
     assert.equal(state.phase, 'stopped');
     assert.ok(notes.length >= 1);
 
-    state = makeState({ phase: 'work' });
+    state = assignedState({ phase: 'work' });
     apply(state, [modRaw('[STOP] @claude-1')]);
     assert.equal(state.phase, 'stopped');
 
-    state = makeState({ phase: 'work' });
+    state = assignedState({ phase: 'work' });
     apply(state, [modRaw('[STOP] @claude-2')]);
     assert.equal(state.phase, 'work');
   });
 
+  test('STOP 沒有 @：沒被指派的 agent 也停；closed、idle 不受影響', () => {
+    let state = makeState({ phase: 'topic', assigned: false });
+    apply(state, [modRaw('[STOP]')]);
+    assert.equal(state.phase, 'stopped');
+
+    for (const phase of ['closed', 'idle']) {
+      state = assignedState({ phase });
+      apply(state, [modRaw('[STOP]')]);
+      assert.equal(state.phase, phase);
+    }
+  });
+
   test('stopped 之後收到 GO、CONTINUE、ASSIGN 照常轉換', () => {
-    let state = makeState({ phase: 'stopped' });
+    let state = assignedState({ phase: 'stopped' });
     apply(state, [modRaw('[GO]')]);
     assert.equal(state.phase, 'work');
 
-    state = makeState({ phase: 'stopped' });
+    state = assignedState({ phase: 'stopped' });
     apply(state, [modRaw('[CONTINUE] 1')]);
     assert.equal(state.phase, 'discussion');
 
@@ -1150,61 +1356,116 @@ describe('applyDirectives：GO、CONTINUE、STOP、CLOSE', () => {
     assert.equal(state.phase, 'discussion');
   });
 
+  test('沒被指派而被 STOP 的 agent，收到沒有 @ 的 GO 仍停著', () => {
+    const state = makeState({ phase: 'stopped', assigned: false });
+    apply(state, [modRaw('[GO]')]);
+    assert.equal(state.phase, 'stopped');
+  });
+
   test('CLOSE：階段改為 closed，第一行 @ 別人也一樣', () => {
-    let state = makeState({ phase: 'work' });
+    let state = assignedState({ phase: 'work' });
     const notes = apply(state, [modRaw('[CLOSE]')]);
     assert.equal(state.phase, 'closed');
     assert.ok(notes.length >= 1);
 
-    state = makeState({ phase: 'discussion' });
+    state = assignedState();
     apply(state, [modRaw('[CLOSE] @claude-2')]);
     assert.equal(state.phase, 'closed');
   });
 });
 
-describe('applyDirectives：ANSWER 與 pendingQuestionId', () => {
+describe('applyDirectives：清除 pendingQuestionId（§4.4）', () => {
   const Q = OWN_B;
+  const asking = (over = {}) => assignedState({ pendingQuestionId: Q, ...over });
 
-  test('ANSWER 第一行 @ 我：清除 pendingQuestionId，階段不變', () => {
-    const state = makeState({ phase: 'work', pendingQuestionId: Q });
+  test('對我生效的 ANSWER（第一行 @ 我）：清除，階段不變', () => {
+    const state = asking({ phase: 'work' });
     apply(state, [modRaw('[ANSWER] @claude-1\n\n可以，照做')]);
-    assert.equal(state.pendingQuestionId ?? null, null);
+    assert.equal(state.pendingQuestionId, null);
     assert.equal(state.phase, 'work');
   });
 
   test('ANSWER 的 to: 我的名稱', () => {
-    const state = makeState({ phase: 'discussion', pendingQuestionId: Q });
+    const state = asking();
     apply(state, [modRaw('[ANSWER]\nto: claude-1\n\n可以')]);
-    assert.equal(state.pendingQuestionId ?? null, null);
+    assert.equal(state.pendingQuestionId, null);
   });
 
   test('ANSWER 用 Discord 回覆我的問題', () => {
-    const state = makeState({ phase: 'discussion', pendingQuestionId: Q });
+    const state = asking();
     apply(state, [modRaw('[ANSWER] 可以', replyTo(Q))]);
-    assert.equal(state.pendingQuestionId ?? null, null);
+    assert.equal(state.pendingQuestionId, null);
   });
 
-  test('主導者不加標籤、直接回覆我的問題，也清除 pendingQuestionId', () => {
-    const state = makeState({ phase: 'discussion', pendingQuestionId: Q });
+  test('主導者不加標籤、直接回覆我的問題', () => {
+    const state = asking();
     apply(state, [modRaw('可以，照你說的做', replyTo(Q))]);
-    assert.equal(state.pendingQuestionId ?? null, null);
+    assert.equal(state.pendingQuestionId, null);
     assert.equal(state.phase, 'discussion');
   });
 
+  test('主導者回覆我發過的其他訊息（不是那則問題）也清除', () => {
+    const state = asking();
+    apply(state, [modRaw('好', replyTo(OWN_A))]);
+    assert.equal(state.pendingQuestionId, null);
+  });
+
+  test('主導者帶標籤的訊息回覆我的訊息也清除', () => {
+    const state = asking();
+    apply(state, [modRaw('[STOP] @claude-2', replyTo(OWN_A))]);
+    assert.equal(state.pendingQuestionId, null);
+    assert.equal(state.phase, 'discussion');
+  });
+
+  test('問題已掉出 ownMessageIds，主導者回覆那則問題仍會清除', () => {
+    const OLD_Q = '1100000000000000099';
+    let state = asking({ ownMessageIds: [OWN_A], pendingQuestionId: OLD_Q });
+    apply(state, [modRaw('[ANSWER] 可以', replyTo(OLD_Q))]);
+    assert.equal(state.pendingQuestionId, null);
+
+    state = asking({ ownMessageIds: [OWN_A], pendingQuestionId: OLD_Q });
+    apply(state, [modRaw('可以', replyTo(OLD_Q))]);
+    assert.equal(state.pendingQuestionId, null);
+  });
+
+  test('主導者沒有標籤、內文 @ 我的名稱：清除', () => {
+    let state = asking();
+    apply(state, [modRaw('@claude-1 可以，照做')]);
+    assert.equal(state.pendingQuestionId, null);
+
+    state = asking();
+    apply(state, [modRaw('好的。\n請@Claude-1照做')]);
+    assert.equal(state.pendingQuestionId, null);
+  });
+
+  test('主導者沒有標籤、只 @ 我的角色或廣播：不清除', () => {
+    const state = asking();
+    apply(state, [modRaw('@前端 可以'), modRaw('@全體 可以')]);
+    assert.equal(state.pendingQuestionId, Q);
+  });
+
+  test('主導者有標籤（不是對我生效的 ANSWER）、內文 @ 我：不清除', () => {
+    const state = asking();
+    apply(state, [modRaw('[STOP] @claude-2\n\n@claude-1 你繼續')]);
+    assert.equal(state.pendingQuestionId, Q);
+  });
+
   test('ANSWER 給別人：不清除', () => {
-    const state = makeState({ phase: 'discussion', pendingQuestionId: Q });
+    const state = asking();
     apply(state, [modRaw('[ANSWER] @claude-2\n\n可以')]);
     assert.equal(state.pendingQuestionId, Q);
     apply(state, [modRaw('[ANSWER]\nto: claude-2\n\n可以')]);
     assert.equal(state.pendingQuestionId, Q);
   });
 
-  test('非主導者的 ANSWER 或回覆：不清除', () => {
-    const state = makeState({ phase: 'discussion', pendingQuestionId: Q });
+  test('非主導者的 ANSWER、回覆、@ 我：都不清除', () => {
+    const state = asking();
     apply(state, [
       agentRaw('claude-2 (後端)', '[ANSWER] @claude-1\n\n可以'),
+      agentRaw('claude-2 (後端)', '@claude-1 可以', replyTo(Q)),
       humanRaw('[ANSWER] @claude-1\n\n可以'),
       humanRaw('可以', replyTo(Q)),
+      humanRaw('@claude-1 可以'),
     ]);
     assert.equal(state.pendingQuestionId, Q);
   });
@@ -1212,7 +1473,7 @@ describe('applyDirectives：ANSWER 與 pendingQuestionId', () => {
 
 describe('applyDirectives：只有主導者的指令生效、自己的訊息不套用', () => {
   test('agent、人類、bot、其他 webhook 發的主導者標籤都不生效', () => {
-    const state = makeState({ phase: 'discussion', role: '前端' });
+    const state = assignedState();
     apply(state, [
       agentRaw('claude-2 (後端)', '[GO]'),
       humanRaw('[TOPIC] 假議題'),
@@ -1226,7 +1487,7 @@ describe('applyDirectives：只有主導者的指令生效、自己的訊息不�
   });
 
   test('自己的訊息不套用', () => {
-    const state = makeState({ phase: 'discussion' });
+    const state = assignedState();
     apply(state, [agentRaw('claude-1 (前端)', '[STOP]'), agentRaw('claude-1', '[CLOSE]')]);
     assert.equal(state.phase, 'discussion');
   });
@@ -1242,27 +1503,27 @@ describe('applyDirectives：emptyWaitSince（§5.4）', () => {
     ['bot', () => botRaw('hi')],
   ]) {
     test(`${label}的訊息清除 emptyWaitSince`, () => {
-      const state = makeState({ phase: 'discussion', emptyWaitSince: SINCE });
+      const state = assignedState({ emptyWaitSince: SINCE });
       apply(state, [make()]);
       assert.equal(state.emptyWaitSince, null);
     });
   }
 
   test('只有自己的訊息時不清除', () => {
-    const state = makeState({ phase: 'discussion', emptyWaitSince: SINCE });
+    const state = assignedState({ emptyWaitSince: SINCE });
     apply(state, [agentRaw('claude-1 (前端)', '[DISCUSS] t\n\n看法')]);
     assert.equal(state.emptyWaitSince, SINCE);
   });
 
   test('沒有訊息時不清除', () => {
-    const state = makeState({ phase: 'discussion', emptyWaitSince: SINCE });
+    const state = assignedState({ emptyWaitSince: SINCE });
     assert.deepEqual(applyDirectives(state, [], ROOM), []);
     assert.equal(state.emptyWaitSince, SINCE);
   });
 });
 
-describe('applyDirectives：依序套用', () => {
-  test('TOPIC → ASSIGN → GO 同一批：最後是 work，角色已設定', () => {
+describe('applyDirectives：依序逐則套用、每則用當下的狀態判斷對象', () => {
+  test('TOPIC → ASSIGN → GO（沒有 @）同一批：ASSIGN 之後已被指派，GO 生效', () => {
     const state = makeState();
     const notes = apply(state, [
       modRaw('[TOPIC] 議題'),
@@ -1271,25 +1532,33 @@ describe('applyDirectives：依序套用', () => {
     ]);
     assert.equal(state.phase, 'work');
     assert.equal(state.role, '前端');
+    assert.equal(state.assigned, true);
     assert.equal(state.topic.title, '議題');
     assert.ok(notes.length >= 1);
   });
 
   test('GO → STOP：stopped；STOP → GO：work', () => {
-    let state = makeState({ phase: 'discussion' });
+    let state = assignedState();
     apply(state, [modRaw('[GO]'), modRaw('[STOP]')]);
     assert.equal(state.phase, 'stopped');
 
-    state = makeState({ phase: 'discussion' });
+    state = assignedState();
     apply(state, [modRaw('[STOP]'), modRaw('[GO]')]);
     assert.equal(state.phase, 'work');
   });
 
-  test('ASSIGN 之後的 TOPIC 會清掉剛設定的角色', () => {
+  test('ASSIGN 之後的 TOPIC 會清掉剛設定的角色與 assigned', () => {
     const state = makeState({ phase: 'topic' });
     apply(state, [modRaw('[ASSIGN] @claude-1\nrole: 前端'), modRaw('[TOPIC] 換題')]);
     assert.equal(state.phase, 'topic');
-    assert.ok(isCleared(state.role));
+    assert.equal(state.role, null);
+    assert.equal(state.assigned, false);
+  });
+
+  test('TOPIC 之後同一批的 GO（沒有 @）：已不是被指派狀態，不生效', () => {
+    const state = assignedState();
+    apply(state, [modRaw('[TOPIC] 換題'), modRaw('[GO]')]);
+    assert.equal(state.phase, 'topic');
   });
 
   test('同一批先 ASSIGN 角色、再 GO @該角色：GO 依當下的角色對我生效', () => {
