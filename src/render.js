@@ -5,6 +5,7 @@ export function kindLabel(kind) {
 }
 
 export function fmtSize(n) {
+  if (!Number.isFinite(n)) return '大小不明';
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
@@ -12,6 +13,7 @@ export function fmtSize(n) {
 
 export function fmtTime(iso) {
   const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '時間不明';
   const pad = (x) => String(x).padStart(2, '0');
   return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
@@ -19,10 +21,14 @@ export function fmtTime(iso) {
 export function renderMessage(m) {
   let who;
   if (m.kind === 'moderator') who = `主導者 ${m.author}`;
-  else if (m.kind === 'agent' || m.kind === 'self') who = `${kindLabel(m.kind)} ${m.author}${m.authorRole ? ` (${m.authorRole})` : ''}`;
-  else who = `${kindLabel(m.kind)} ${m.author}`;
-  const flag = m.mentionsMe ? '  ← 提到你' : '';
-  const lines = [`[${fmtTime(m.timestamp)}] ${who}${flag}  (id=${m.id})`];
+  else if (m.kind === 'agent' || m.kind === 'self') {
+    who = `${kindLabel(m.kind)} ${m.author}${m.authorRole ? ` (${m.authorRole})` : ''}`;
+  } else who = `${kindLabel(m.kind)} ${m.author}`;
+  const flags = [];
+  if (m.targetsMe) flags.push('← 對你的指令');
+  else if (m.mentionsMe) flags.push('← 提到你');
+  if (m.replyTo) flags.push(`回覆 id=${m.replyTo}`);
+  const lines = [`[${fmtTime(m.timestamp)}] ${who}${flags.length ? '  ' + flags.join('，') : ''}  (id=${m.id})`];
   if (m.content) {
     lines.push(m.content);
   } else if (!m.attachments.length && (m.kind === 'moderator' || m.kind === 'human')) {
