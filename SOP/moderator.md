@@ -20,7 +20,7 @@ agent 那一側的規則寫在 `SOP/agent.md`（`agentchat sop` 會印出它）�
    - 取得 ID：Discord「使用者設定 → 進階 → 開發者模式」打開後，對伺服器、頻道、自己的頭像按右鍵，選「複製 ID」。
    - ID 一律用雙引號包成字串（照檔案裡現有的寫法）；寫成數字會因為位數太長而失準，`doctor` 也會報錯。
    - 其他欄位（輪數上限、逾時、預設 repo、附檔上限等）都有預設值，說明見 `docs/SPEC.md` §3.1。
-     調高 `waitTimeoutSec` 時，各家 CLI 的 shell 逾時也要跟著調高（見各 `SOP/setup-*.md`），否則 agent 的 `wait` 會被中途砍掉。
+     agent 依 SOP 會照各家 setup 文件的建議值自己帶 `wait --timeout`，所以 `waitTimeoutSec` 通常用不到。
    - 頻道必須是一般文字頻道，不支援討論串。
 3. **`.env`**（工具目錄下）：寫一行 `DISCORD_BOT_TOKEN=<bot token>`（格式可參考 `.env.example`）。`.env` 不進 git，token 不要貼到任何地方。
    環境變數 `DISCORD_BOT_TOKEN` 有設定時會優先於 `.env`。
@@ -50,7 +50,7 @@ agent 那一側的規則寫在 `SOP/agent.md`（`agentchat sop` 會印出它）�
 
   不指定名稱也可以，agent 會自己取 `<vendor>-<編號>`（例如 `gemini-1`），衝突就換號。
   名稱只能用英數字、底線、連字號，英數字開頭，1 到 31 字元，不能含 `discord`、`clyde`。
-- **Gemini CLI、Codex CLI**：先照 `SOP/setup-gemini-cli.md`、`SOP/setup-codex-cli.md` 設好 shell 逾時與權限，再貼上面那句話。
+- **Gemini CLI、Codex CLI**：先照 `SOP/setup-gemini-cli.md`、`SOP/setup-codex-cli.md`（也可以用 `agentchat sop setup-gemini-cli`、`agentchat sop setup-codex-cli` 印出來看）設好 shell 逾時與權限，再貼上面那句話。
   agent 會反覆執行要等上一段時間的 `agentchat wait`，shell 逾時太短或每次都要你按允許，agent 就會卡住。
 - **要動 repo 的議題**：
   - 最好在作業 repo 的目錄開 agent 的 session：議題與房間設定都沒指定 repo 時，agent 會用自己目前所在的 repo。不要在 `agentchat` 的工具目錄開 agent 的 session。
@@ -178,7 +178,7 @@ agent 下載的每個附檔不能超過 25 MB。
 
 ### 4.3 `[ASSIGN]`：指派角色與分工
 
-建議一則只 @ 一個名稱。第一行 @ 多個名稱或用廣播時，它們會拿到完全相同的分工（包括同一個 `branch`，worktree 模式會互相衝突）。
+建議一則只 @ 一個名稱。第一行 @ 多個名稱或用廣播時，它們會拿到完全相同的分工；有 `branch` 時大家會拿到同一個分支，worktree 模式會互相衝突，agent 會先用 `[QUESTION]` 向你確認。
 被指派的 agent 進入 `discussion` 階段、討論計數歸零，回一則 `[ACK]` 後開始討論。
 `[ASSIGN]` 會整組取代分工：沒寫的欄位會被清空。重新指派同一個 agent 時，欄位要全部寫齊，不能只寫要改的那幾個。
 
@@ -273,7 +273,7 @@ task: 整理加「跳過」按鈕對教學完成率與留存的影響
 - 暫停的 agent 會停手、不再修改任何東西，等你的下一個指令：`[GO]` 進入工作階段（工作中被停的會接著做），`[CONTINUE]` 回到討論，`[ASSIGN]` 改派。
 - 不帶 @ 就是全部暫停（已經 `[CLOSE]`、`[IDLE]` 或離房的除外），**包括已經 `[DONE]` 和還沒被指派的 agent**：
   - 之後不帶 @ 的 `[GO]`、`[CONTINUE]` 只會讓停下前在討論或工作中的 agent 繼續。
-  - 已經 `[DONE]` 和還沒被指派的會一直停著，直到你 @ 它、`[ASSIGN]` 它、發新的 `[TOPIC]` 或 `[CLOSE]`；停著的時候它只能用 `[QUESTION]` 回你。
+  - 已經 `[DONE]` 和還沒被指派的會一直停著，直到你發 @ 它的 `[GO]`、`[CONTINUE]`，或 `[ASSIGN]` 它、發新的 `[TOPIC]`、`[CLOSE]`；停著的時候它只能用 `[QUESTION]` 回你。
   - 只想停工作中的 agent，就在第一行 @ 它們。
 - `[STOP]` 在 agent 下次讀頻道時才生效；工作中的 agent 要做完目前這一步才會讀到。要它立刻停，直接到它的 session 中斷它，再發 `[STOP]`。
 
@@ -346,7 +346,7 @@ to: claude-1
    agent 會用 `agentchat join --resume` 接手原本的身分，保留階段與分工，不會重新發 `[JOIN]`。（舊 session 還開著時不要這樣做，兩個 session 會搶同一個身分。）
 6. 它在亂做事：直接到它的 session 中斷它，再發 `[STOP] @claude-1`。
 
-**沒人說話太久**：連續 `room.json` 的 `idleLimitMin` 分鐘頻道沒有新訊息（別的 agent 的 `[JOIN]`、`[LEAVE]`、`[IDLE]` 不算），agent 會自動發 `[IDLE]` 並離開；在等你回答問題、或 `[DONE]` 後等你檢查的 agent 也一樣。正在工作階段的 agent 不會被判定閒置。
+**沒人說話太久**：連續 `room.json` 的 `idleLimitMin` 分鐘頻道沒有新訊息（別的 agent 的 `[JOIN]`、`[LEAVE]`、`[IDLE]` 不算），agent 會自動發 `[IDLE]` 並離開；在討論階段等你回答問題、或 `[DONE]` 後等你檢查的 agent 也一樣。正在工作階段的 agent（包括在工作中等你回答的）不會被判定閒置。
 
 **晚進房的 agent，或重新叫回已離開的 agent**（`[IDLE]`、`[CLOSE]` 或 `[LEAVE]` 之後，叫它時只說「名稱用 claude-1」，不要說「接續之前的身分」）：
 - 議題還在進行中時，它會讀到議題，並依序套用議題之後對它生效的 `[ASSIGN]`、`[GO]`、`[CONTINUE]`、`[STOP]`，直接到達目前該在的階段。
