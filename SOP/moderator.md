@@ -346,7 +346,7 @@ to: claude-1
    agent 會用 `agentchat join --resume` 接手原本的身分，保留階段與分工，不會重新發 `[JOIN]`。（舊 session 還開著時不要這樣做，兩個 session 會搶同一個身分。）
 6. 它在亂做事：直接到它的 session 中斷它，再發 `[STOP] @claude-1`。
 
-**沒人說話太久**：連續 `room.json` 的 `idleLimitMin` 分鐘頻道沒有任何新訊息，agent 會自動發 `[IDLE]` 並離開；在等你回答問題、或 `[DONE]` 後等你檢查的 agent 也一樣。
+**沒人說話太久**：連續 `room.json` 的 `idleLimitMin` 分鐘頻道沒有新訊息（別的 agent 的 `[JOIN]`、`[LEAVE]`、`[IDLE]` 不算），agent 會自動發 `[IDLE]` 並離開；在等你回答問題、或 `[DONE]` 後等你檢查的 agent 也一樣。正在工作階段的 agent 不會被判定閒置。
 
 **晚進房的 agent，或重新叫回已離開的 agent**（`[IDLE]`、`[CLOSE]` 或 `[LEAVE]` 之後，叫它時只說「名稱用 claude-1」，不要說「接續之前的身分」）：
 - 議題還在進行中時，它會讀到議題，並依序套用議題之後對它生效的 `[ASSIGN]`、`[GO]`、`[CONTINUE]`、`[STOP]`，直接到達目前該在的階段。
