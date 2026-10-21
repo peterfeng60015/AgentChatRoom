@@ -3,7 +3,7 @@ import { compareSnowflake, snowflakeNow } from '../discord.js';
 import { ProtocolError, UserError } from '../errors.js';
 import { LEFT_TEXT, applyEach, buildMessage, reminders } from '../protocol.js';
 import { kindLabel, renderMessages, section } from '../render.js';
-import { appendLog, recordOwnMessages, updateAgent } from '../state.js';
+import { appendLog, loadAgent, recordOwnMessages, updateAgent } from '../state.js';
 import { normalizeAll, phaseOf, publicMessage, requireAgent, roundInfo, summaryLine } from '../context.js';
 import { sendParts } from '../publish.js';
 
@@ -17,6 +17,8 @@ export const details = [
 ];
 
 const MAX_TIMEOUT = 540;
+// 單次輸出上限（§6.3）：太長的輸出會被 agent 的工具截掉，沒輸出的留給下一次 wait。
+export const MAX_BATCH = 50;
 const UNTIL = ['any', 'mention', 'moderator'];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -59,33 +61,43 @@ export async function run(ctx) {
   let reason = null;
 
   for (;;) {
-    const raws = await client.messagesAfter(room.channelId, lastSeen);
-    for (const m of normalizeAll(raws, room, state)) {
-      if (compareSnowflake(m.id, lastSeen) > 0) lastSeen = m.id;
+    // 一次最多抓兩頁就好：超過 MAX_BATCH 則就結束，剩下的留給下一次 wait。
+    const raws = await client.messagesAfter(room.channelId, lastSeen, 2);
+    for (const raw of raws) if (compareSnowflake(raw.id, lastSeen) > 0) lastSeen = raw.id;
+    // 每輪重讀狀態檔：等待期間同一個 agent 可能另外 ask 或發言，回覆那些訊息也要算「提到我」。
+    const live = loadAgent(room.channelId, state.name) ?? state;
+    for (const m of normalizeAll(raws, room, live)) {
       if (m.kind === 'self' || seen.has(m.id)) continue;
       seen.add(m.id);
       collected.push(m);
-      reason ??= matchReason(m, until);
+      if (collected.length <= MAX_BATCH) reason ??= matchReason(m, until);
     }
-    if (reason) break;
+    if (reason || collected.length > MAX_BATCH) break;
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
     await sleep(Math.min(pollMs, remaining));
   }
 
+  // 超過上限時只處理最舊的 MAX_BATCH 則，游標也只移到其中最後一則。
+  const partial = collected.length > MAX_BATCH;
+  const batch = partial ? collected.slice(0, MAX_BATCH) : collected;
+  const newCursor = partial ? batch[batch.length - 1].id : lastSeen;
+
   // 套用指令前重新讀檔：等待期間同一個 agent 可能已經發言（ownMessageIds、輪數有變）。
+  // 只套用游標之後的訊息：同一個 agent 另一個 wait 若已經套用過、把游標移過去，不能再套用一次。
   let notes = [];
   let updated = updateAgent(room.channelId, state.name, (s) => {
-    ({ notes } = applyEach(s, collected, room));
-    if (!s.cursor || compareSnowflake(lastSeen, s.cursor) > 0) s.cursor = lastSeen;
+    const fresh = batch.filter((m) => !s.cursor || compareSnowflake(m.id, s.cursor) > 0);
+    ({ notes } = applyEach(s, fresh, room));
+    if (!s.cursor || compareSnowflake(newCursor, s.cursor) > 0) s.cursor = newCursor;
   });
-  if (collected.length) {
-    appendLog(room.channelId, { dir: 'in', agent: state.name, ids: collected.map((m) => m.id) });
+  if (batch.length) {
+    appendLog(room.channelId, { dir: 'in', agent: state.name, ids: batch.map((m) => m.id) });
   }
 
-  let status = reason ? 'matched' : 'timeout';
+  let status = partial ? 'partial' : reason ? 'matched' : 'timeout';
   // 沒有符合條件的新訊息、而且計時沒被重設（別人只是進出房或發 [IDLE]）時才可能觸發。
-  if (timed && !reason && !['work', 'idle', 'left'].includes(updated.phase)) {
+  if (timed && status === 'timeout' && !['work', 'idle', 'left'].includes(updated.phase)) {
     const since = Date.parse(updated.emptyWaitSince);
     if (Number.isFinite(since) && Date.now() - since >= room.idleLimitMin * 60000) {
       const content = buildMessage(
@@ -104,19 +116,21 @@ export async function run(ctx) {
     }
   }
 
-  const others = collected.length;
+  const others = batch.length;
   const statusLine = {
     matched: `狀態：符合條件（${reason}）`,
     timeout: others ? `狀態：逾時，有 ${others} 則其他新訊息` : '狀態：逾時，沒有新訊息',
     idle: '狀態：已自動發出 [IDLE]',
+    partial: `狀態：還有未讀，先處理這 ${MAX_BATCH} 則，再執行 agentchat wait --timeout 0`,
   }[status];
   const rem = reminders(updated, room);
+  // 注意與提醒放在訊息前面：輸出很長時，agent 的工具常只顯示開頭。
   const text = [statusLine, summaryLine(updated, room)];
-  if (collected.length) text.push('', renderMessages(collected, { as: updated.name }));
   const n = section('注意', notes);
   if (n) text.push(n);
   const r = section('提醒', rem);
   if (r) text.push(r);
+  if (batch.length) text.push('', renderMessages(batch, { as: updated.name }));
   return {
     text,
     data: {
@@ -125,7 +139,7 @@ export async function run(ctx) {
       phase: phaseOf(updated),
       role: updated.role,
       round: roundInfo(updated, room),
-      messages: collected.map(publicMessage),
+      messages: batch.map(publicMessage),
       notes,
       reminders: rem,
     },

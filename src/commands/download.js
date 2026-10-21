@@ -23,13 +23,14 @@ export function sanitizeFilename(name) {
   return cleaned || 'file';
 }
 
+// used 存小寫：macOS 的檔案系統不分大小寫，Package.json 與 package.json 是同一個檔。
 function uniqueName(name, used) {
-  if (!used.has(name)) return name;
+  if (!used.has(name.toLowerCase())) return name;
   const ext = path.extname(name);
   const stem = name.slice(0, name.length - ext.length);
   for (let i = 2; ; i++) {
     const candidate = `${stem} (${i})${ext}`;
-    if (!used.has(candidate)) return candidate;
+    if (!used.has(candidate.toLowerCase())) return candidate;
   }
 }
 
@@ -53,9 +54,16 @@ export async function run(ctx) {
     }
   }
 
-  const dir = ctx.values.out ? path.resolve(ctx.values.out) : downloadDir(room.channelId, messageId);
-  fs.mkdirSync(dir, { recursive: true });
-  const used = new Set();
+  // 預設資料夾一則訊息一個，重新下載可以覆蓋；--out 指到的是使用者的目錄，外部檔案不能蓋掉既有的檔。
+  const custom = ctx.values.out !== undefined;
+  const dir = custom ? path.resolve(ctx.values.out) : downloadDir(room.channelId, messageId);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    throw new UserError(`無法建立下載目錄：${dir}`);
+  }
+  if (!fs.statSync(dir).isDirectory()) throw new UserError(`--out 不是目錄：${dir}`);
+  const used = new Set(custom ? fs.readdirSync(dir).map((n) => n.toLowerCase()) : []);
   const files = [];
   const skipped = [];
   for (const a of attachments) {
@@ -65,15 +73,22 @@ export async function run(ctx) {
     }
     const data = await ctx.client.download(a.url, { maxBytes: MAX_BYTES });
     const name = uniqueName(sanitizeFilename(a.filename), used);
-    used.add(name);
+    used.add(name.toLowerCase());
     const target = path.join(dir, name);
-    // 先刪再以 wx 建立：重新下載時覆蓋舊檔，但不會跟著目錄裡既有的 symlink 寫到別處。
-    try {
-      fs.unlinkSync(target);
-    } catch {
-      // 檔案本來就不存在。
+    // 預設資料夾：先刪再以 wx 建立，覆蓋舊檔但不跟著既有的 symlink 寫到別處；同名的是目錄就報錯。
+    if (!custom) {
+      try {
+        if (fs.lstatSync(target).isDirectory()) throw new UserError(`下載目錄裡有同名的資料夾：${target}`);
+        fs.unlinkSync(target);
+      } catch (e) {
+        if (e instanceof UserError) throw e;
+      }
     }
-    fs.writeFileSync(target, data, { flag: 'wx' });
+    try {
+      fs.writeFileSync(target, data, { flag: 'wx' });
+    } catch (e) {
+      throw new UserError(`無法寫入 ${target}：${e.code === 'EEXIST' ? '已有同名檔案' : e.code || e.message}`);
+    }
     files.push({ path: target, size: data.length, contentType: a.content_type || null, filename: a.filename });
   }
   if (!files.length) {

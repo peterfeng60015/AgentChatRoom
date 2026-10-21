@@ -1,4 +1,3 @@
-import { snowflakeNow } from '../discord.js';
 import { ProtocolError, UserError } from '../errors.js';
 import { applyEach, buildMessage, reminders, splitAgentName } from '../protocol.js';
 import { fmtTime, renderMessage, renderMessages, section } from '../render.js';
@@ -6,7 +5,7 @@ import { appendLog, loadAgent, newAgent, recordOwnMessages, saveAgent } from '..
 import {
   agentName,
   ensureWebhook,
-  fetchUnread,
+  countUnread,
   normalizeAll,
   publicMessage,
   publicState,
@@ -101,7 +100,7 @@ export async function run(ctx) {
     let unread = null;
     let unreadError = null;
     try {
-      unread = (await fetchUnread(ctx, existing)).length;
+      unread = await countUnread(ctx, existing);
     } catch (e) {
       unreadError = e.message;
     }
@@ -111,14 +110,14 @@ export async function run(ctx) {
       `房間：${room.roomName}（頻道 ${room.channelId}）`,
       ...stateLines(existing, room),
     ];
-    const u = unreadLine(unread ?? 0);
+    const u = unreadLine(unread);
     if (u) text.push(u);
     if (unreadError) text.push(`未讀：無法取得（${unreadError}）`);
     const tail = section('下一步', rem);
     if (tail) text.push(tail);
     return {
       text,
-      data: { reconnected: true, room: { name: room.roomName, channelId: room.channelId }, state: publicState(existing, room), unread, reminders: rem },
+      data: { reconnected: true, room: { name: room.roomName, channelId: room.channelId }, state: publicState(existing, room), unread: unread?.count ?? null, unreadCapped: unread?.capped ?? null, reminders: rem },
     };
   }
 
@@ -136,7 +135,8 @@ export async function run(ctx) {
     }
   }
 
-  const latest = raws.length ? raws[raws.length - 1].id : snowflakeNow();
+  // 空頻道用 '0'：不用本機時鐘，免得時鐘偏快時漏讀剛進房後別人發的訊息。
+  const latest = raws.length ? raws[raws.length - 1].id : '0';
   const state = newAgent({
     name,
     vendor,

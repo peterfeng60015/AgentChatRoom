@@ -9,5 +9,8 @@ const here = path.dirname(fs.realpathSync(fileURLToPath(import.meta.url)));
 const { main } = await import(pathToFileURL(path.join(here, '..', 'src', 'cli.js')).href);
 const code = await main(process.argv.slice(2));
 process.exitCode = code;
-// fetch 的連線池或 stdin 偶爾會讓行程多掛幾秒；輸出寫完後就結束，計時器 unref 不會拖住正常結束。
-setTimeout(() => process.exit(code), 3000).unref();
+// 等 stdout、stderr 真的寫完（macOS 的 pipe 是非同步寫入）再結束，免得 fetch 的連線池讓行程多掛幾秒，
+// 也不會在讀的一方很慢時截斷輸出。
+const flushed = (stream) => new Promise((resolve) => stream.write('', () => resolve()));
+await Promise.all([flushed(process.stdout), flushed(process.stderr)]);
+process.exit(code);

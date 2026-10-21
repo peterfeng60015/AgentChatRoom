@@ -31,19 +31,22 @@ export const ROOM_DEFAULTS = {
   idleLimitMin: 60,
   progressReminderMin: 15,
   maxFileMB: 10,
+  maxUploadMB: 10,
   longTextChars: 6000,
 };
 
 const REQUIRED = ['guildId', 'channelId', 'moderatorUserId'];
-const NUMERIC = [
-  'maxDiscussionRounds',
-  'waitTimeoutSec',
-  'pollIntervalSec',
-  'idleLimitMin',
-  'progressReminderMin',
-  'maxFileMB',
-  'longTextChars',
-];
+// 數字欄位：[最小值, 是否必須是整數]。
+const NUMERIC = {
+  maxDiscussionRounds: [1, true],
+  waitTimeoutSec: [0, false],
+  pollIntervalSec: [0.05, false],
+  idleLimitMin: [0, false],
+  progressReminderMin: [0, false],
+  maxFileMB: [0.001, false],
+  maxUploadMB: [0.001, false],
+  longTextChars: [600, true],
+};
 
 // 極簡 .env 解析：KEY=VALUE，支援 # 註解、export 前綴與引號。
 export function parseEnv(text) {
@@ -60,6 +63,9 @@ export function parseEnv(text) {
     let value = line.slice(i + 1).trim();
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1);
+    } else {
+      // 沒加引號時，空白之後的 # 是行尾註解。
+      value = value.replace(/\s+#.*$/, '');
     }
     env[key] = value;
   }
@@ -72,11 +78,18 @@ export function loadEnv() {
 }
 
 // 回傳 { token, source }，找不到時 token 是 null。doctor 要知道來源但不能印出 token。
+// token 只能是可見的 ASCII；含換行、空白等字元時 fetch 會丟出帶著整個 token 的錯誤，所以先擋下（訊息不含 token）。
 export function findToken() {
-  if (process.env.DISCORD_BOT_TOKEN) return { token: process.env.DISCORD_BOT_TOKEN.trim(), source: '環境變數' };
-  const fromFile = loadEnv().DISCORD_BOT_TOKEN;
-  if (fromFile) return { token: fromFile.trim(), source: ENV_FILE };
-  return { token: null, source: null };
+  let found = { token: null, source: null };
+  if (process.env.DISCORD_BOT_TOKEN) found = { token: process.env.DISCORD_BOT_TOKEN.trim(), source: '環境變數' };
+  else {
+    const fromFile = loadEnv().DISCORD_BOT_TOKEN;
+    if (fromFile) found = { token: fromFile.trim(), source: ENV_FILE };
+  }
+  if (found.token && !/^[\x21-\x7E]+$/.test(found.token)) {
+    throw new UserError(`DISCORD_BOT_TOKEN 含有空白、換行或非 ASCII 字元（來源：${found.source}），請重新貼上 token`);
+  }
+  return found;
 }
 
 export function getToken() {
@@ -119,11 +132,23 @@ export function loadRoom(roomName) {
       throw new UserError(`房間設定檔的 ${key} 必須是用引號包起來的數字 ID：${file}`);
     }
   }
-  const room = { ...ROOM_DEFAULTS, ...json, file };
-  for (const key of NUMERIC) {
-    if (typeof room[key] !== 'number' || !Number.isFinite(room[key]) || room[key] < 0) {
-      throw new UserError(`房間設定檔的 ${key} 必須是不小於 0 的數字：${file}`);
+  // 選填欄位寫成 null 或空字串時用預設值，不要讓「基準分支：null」或空名稱的 webhook 跑出來。
+  const given = Object.fromEntries(Object.entries(json).filter(([, v]) => v !== null && v !== ''));
+  const room = { ...ROOM_DEFAULTS, ...given, file };
+  for (const [key, [min, integer]] of Object.entries(NUMERIC)) {
+    const v = room[key];
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < min || (integer && !Number.isInteger(v))) {
+      throw new UserError(`房間設定檔的 ${key} 必須是${integer ? '整數' : '數字'}，且不小於 ${min}：${file}`);
     }
+  }
+  for (const key of ['roomName', 'webhookName', 'defaultBase', 'language']) {
+    if (typeof room[key] !== 'string') throw new UserError(`房間設定檔的 ${key} 必須是字串：${file}`);
+  }
+  if (/discord|clyde/i.test(room.webhookName)) {
+    throw new UserError(`房間設定檔的 webhookName 不能含 discord 或 clyde（Discord 不接受）：${file}`);
+  }
+  if (room.defaultRepo !== null && typeof room.defaultRepo !== 'string') {
+    throw new UserError(`房間設定檔的 defaultRepo 必須是字串或 null：${file}`);
   }
   return room;
 }

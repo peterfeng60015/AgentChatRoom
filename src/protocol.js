@@ -59,6 +59,9 @@ const DISCORD_MENTION_RE = /<@[!&]?\d+>/g;
 const ASCII_WORD_CHAR = /[A-Za-z0-9_-]/;
 const MODERATOR_ALIASES = ['moderator', '主導者'];
 
+// 保留字：當名稱會和廣播或主導者 mention 混在一起。
+export const RESERVED_NAMES = ['all', 'agents', 'everyone', 'here', 'moderator'];
+
 export function validateAgentName(name) {
   if (!name || !NAME_RE.test(name)) {
     return '名稱只能用英數字、底線、連字號，開頭須為英數字，長度 1 到 31，例如 claude-1';
@@ -66,6 +69,9 @@ export function validateAgentName(name) {
   const lower = name.toLowerCase();
   if (lower.includes('discord') || lower.includes('clyde')) {
     return 'Discord 不允許名稱含有 discord 或 clyde';
+  }
+  if (RESERVED_NAMES.includes(lower)) {
+    return `${name} 是保留字（${RESERVED_NAMES.join('、')}），請換一個名稱，例如 claude-1`;
   }
   return null;
 }
@@ -258,20 +264,27 @@ export function splitAgentName(username = '') {
   return { name: m ? m[1] : username, role: m && m[2] ? m[2] : null };
 }
 
+// 名稱比對一律不分大小寫（§6.1）。
 export function isSelfName(username = '', name) {
   if (!name) return false;
-  const u = String(username ?? '');
-  return u === name || u.startsWith(`${name} (`);
+  const u = String(username ?? '').toLowerCase();
+  const n = String(name).toLowerCase();
+  return u === n || u.startsWith(`${n} (`);
 }
 
 // 角色會出現在 webhook 顯示名稱 `名稱 (角色)` 與 @角色 裡：刪掉會破壞格式或觸發 mention 的字元，
 // 空白換成 -，讓角色一定能用 @角色 提到。
 export function sanitizeRole(role) {
   if (role === undefined || role === null) return null;
-  const cleaned = String(role)
+  let cleaned = String(role)
     .replace(/[()（）[\]［］【】{}｛｝<>＜＞@＠#:：`]/g, '')
     .replace(/\s+/g, '-')
     .replace(/^-+|-+$/g, '');
+  // Discord 拒收含 discord、clyde 的 webhook 名稱；換到不再出現為止（clclydeyde 這種換一次會再拼出來）。
+  for (let prev = null; prev !== cleaned; ) {
+    prev = cleaned;
+    cleaned = cleaned.replace(/discord/gi, 'dc').replace(/clyde/gi, 'cl');
+  }
   return truncate(cleaned, ROLE_LIMIT) || null;
 }
 
@@ -287,9 +300,14 @@ export function authorKind(raw, room, self, opts = {}) {
   return 'human';
 }
 
+// Discord 的系統訊息（釘選、成員加入等）也帶 message_reference，只有一般訊息（0）與回覆（19）才算回覆。
+export function isSystemMessage(raw) {
+  return raw?.type !== undefined && raw.type !== 0 && raw.type !== 19;
+}
+
 function replyIdOf(raw) {
   const ref = raw?.message_reference;
-  if (!ref || !ref.message_id) return null;
+  if (!ref || !ref.message_id || isSystemMessage(raw)) return null;
   // type 1 是轉傳（forward），不是回覆。
   if (ref.type !== undefined && ref.type !== 0) return null;
   return ref.message_id;
@@ -341,72 +359,108 @@ export function normalize(raw, room, self, opts = {}) {
   return msg;
 }
 
-// 把超過 Discord 上限的訊息切段：盡量在行邊界切，code fence 跨段時兩邊補成對，每段結尾加 (i/n)。
-export function splitMessage(text, limit = DISCORD_MESSAGE_LIMIT) {
-  const source = String(text ?? '');
-  if (source.length <= limit) return [source];
-  const FENCE_CLOSE = '\n```';
-  const MARK_RESERVE = 12; // "\n(9999/9999)" 的長度
-  const budget = Math.max(8, limit - MARK_RESERVE - FENCE_CLOSE.length);
+// code fence：開頭行是 ``` 加語言字串（不能再有反引號，所以同一行開又關的 ```inline``` 不算），
+// 收尾行只有反引號，而且不短於開頭的標記。
+const FENCE_OPEN_RE = /^\s*(`{3,})([^`]*)$/;
+const FENCE_CLOSE_RE = /^\s*(`{3,})\s*$/;
+
+// 在每段 ≤ budget 的前提下切段；fence 跨段時在段尾補收尾行、下一段開頭重開。
+function splitByBudget(source, budget, { fences = true } = {}) {
   const chunks = [];
   let current = null; // 目前這段的行
-  let fenceOpen = null; // 目前所在 code fence 的開頭行，例如 ```js
+  let head = 0; // 這段開頭由工具補上的重開行數（0 或 1）
+  let fence = null; // 目前所在的 fence：{ marker, reopen }
 
   const size = (lines, extra) => (lines.length ? lines.join('\n').length + 1 : 0) + extra.length;
   const flush = () => {
-    let close = Boolean(fenceOpen);
-    // fence 剛好在這段最後一行打開、還沒有內容：把開頭行留給下一段，不留下空的區塊。
-    if (current && fenceOpen && current.length > 1 && /^\s*```/.test(current[current.length - 1])) {
+    let close = Boolean(fence);
+    // fence 剛好在這段最後一行打開、還沒有內容：把開頭行留給下一段（下一段會用一模一樣的行重開），不留下空的區塊。
+    if (current && fence && current.length > head + 1 && current[current.length - 1].trim() === fence.reopen) {
       current.pop();
       close = false;
     }
-    if (current && current.length > (close ? 1 : 0) && current.some((l) => l.trim() !== '')) {
+    if (current && current.length > head && current.some((l) => l.trim() !== '')) {
       const body = current.join('\n').replace(/\n+$/, '');
-      chunks.push(close ? body + FENCE_CLOSE : body);
+      chunks.push(close ? `${body}\n${fence.marker}` : body);
     }
     current = null;
   };
   const push = (line) => {
-    if (current && size(current, line) > budget && current.length > (fenceOpen ? 1 : 0)) flush();
-    if (!current) current = fenceOpen ? [fenceOpen] : [];
+    if (current && size(current, line) > budget && current.length > head) flush();
+    if (!current) {
+      current = fence ? [fence.reopen] : [];
+      head = current.length;
+    }
     current.push(line);
   };
 
   for (const line of source.split('\n')) {
-    const isFence = /^\s*```/.test(line);
-    if (isFence && fenceOpen) {
-      // 收尾的 fence：放得下就放進這段；放不下就直接收段（flush 會補 ```），不在下一段開一個空區塊。
-      if (current && size(current, line) <= budget + FENCE_CLOSE.length) current.push(line);
+    const closing = fences && fence && FENCE_CLOSE_RE.exec(line);
+    if (closing && closing[1].length >= fence.marker.length) {
+      // 收尾行放得下就放進這段；放不下就直接收段（flush 會補收尾行），不在下一段開一個空區塊。
+      if (current && size(current, line) <= budget + fence.marker.length + 1) current.push(line);
       else flush();
-      fenceOpen = null;
+      fence = null;
       continue;
     }
-    const room = Math.max(1, budget - (fenceOpen ? fenceOpen.length + 1 : 0));
-    if (line.length <= room) {
+    const opening = !fences || fence ? null : FENCE_OPEN_RE.exec(line);
+    // 開頭行：重開時只帶簡短的語言字串；把內容寫在 ``` 同一行時不重複那一大段。
+    const next = opening
+      ? { marker: opening[1], reopen: opening[1] + (/^[\w+.#-]{1,20}$/.test(opening[2].trim()) ? opening[2].trim() : '') }
+      : null;
+    const room = (f) => Math.max(1, budget - (f ? f.reopen.length + 1 : 0));
+    if (line.length <= room(fence)) {
       push(line);
-    } else {
-      // 單行就超過上限：硬切，但不切開代理對。
-      let rest = [...line];
-      while (rest.length) {
-        let piece = '';
-        let count = 0;
-        while (count < rest.length && piece.length + rest[count].length <= room) piece += rest[count++];
-        if (count === 0) piece = rest[count++];
-        rest = rest.slice(count);
-        push(piece);
-      }
+      if (next) fence = next;
+      continue;
     }
-    if (isFence) fenceOpen = line.trim();
+    // 單行就超過上限：硬切，但不切開代理對。開頭行的第一片放完就進入 fence，之後的片段跨段時才會補成對。
+    let rest = [...line];
+    while (rest.length) {
+      let piece = '';
+      let count = 0;
+      const max = room(fence ?? next);
+      while (count < rest.length && piece.length + rest[count].length <= max) piece += rest[count++];
+      if (count === 0) piece = rest[count++];
+      rest = rest.slice(count);
+      push(piece);
+      if (next && !fence) fence = next;
+    }
   }
   flush();
-  if (chunks.length <= 1) return chunks.length ? chunks : [source.slice(0, limit)];
-  return chunks.map((c, i) => `${c}\n(${i + 1}/${chunks.length})`);
+  return chunks;
+}
+
+// 把超過 Discord 上限的訊息切段：盡量在行邊界切，code fence 跨段時兩邊補成對，每段結尾加 (i/n)。
+// (i/n) 的長度要看總段數，所以從一位數開始試，段數變多就加大預留再切一次。
+export function splitMessage(text, limit = DISCORD_MESSAGE_LIMIT) {
+  const source = String(text ?? '');
+  if (source.length <= limit) return [source];
+  const markers = source.split('\n').map((l) => (l.match(/^\s*(`{3,})/) || [])[1]?.length ?? 0);
+  const fenceReserve = Math.max(0, ...markers) ? Math.max(...markers) + 1 : 0;
+  // limit 極小時補 fence 的行放不下，退回不處理 fence 的切法；連這樣都超過就是 limit 太小。
+  for (const fences of fenceReserve ? [true, false] : [false]) {
+    for (let digits = 1; digits <= 7; digits++) {
+      const budget = Math.max(1, limit - (2 * digits + 4) - (fences ? fenceReserve : 0));
+      let chunks = splitByBudget(source, budget, { fences });
+      if (chunks.length <= 1) {
+        if (!chunks.length) chunks = [source.slice(0, limit)];
+        if (chunks[0].length <= limit) return chunks;
+        continue;
+      }
+      if (String(chunks.length).length > digits) continue;
+      const marked = chunks.map((c, i) => `${c}\n(${i + 1}/${chunks.length})`);
+      if (marked.every((c) => c.length <= limit)) return marked;
+      break;
+    }
+  }
+  throw new RangeError(`splitMessage 的 limit 太小：${limit}`);
 }
 
 // 本段討論的則數上限：CONTINUE n > 議題的 rounds > 房間預設。
 export function roundLimit(state, room) {
   if (Number.isInteger(state.discussLimit) && state.discussLimit > 0) return state.discussLimit;
-  const fromTopic = parseInt(state.topic?.fields?.rounds, 10);
+  const fromTopic = parseInt(String(state.topic?.fields?.rounds ?? '').normalize('NFKC'), 10);
   if (Number.isFinite(fromTopic) && fromTopic > 0) return fromTopic;
   return room.maxDiscussionRounds;
 }
@@ -416,7 +470,7 @@ export function topicRepoText(fields = {}, room) {
   let repo;
   if (fields.repo) repo = `${fields.repo}（[TOPIC] 指定）`;
   else if (room.defaultRepo) repo = `${room.defaultRepo}（房間預設）`;
-  else repo = '未指定，有 branch 分工時用目前目錄';
+  else repo = '未指定，有 branch 分工時用目前目錄（只有 isolation 時也一樣，用目前目錄所在的 git repo）';
   return `作業 repo：${repo}；基準分支：${fields.base || room.defaultBase}`;
 }
 
@@ -429,11 +483,13 @@ function splitFiles(value) {
   return list.length ? list : null;
 }
 
-// [CONTINUE] 的 n 要先去掉 @ token 與 <@ID>，免得抓到 claude-1 的 1。
+// [CONTINUE] 的 n 要先去掉 @ 對象與 <@ID>，免得抓到 claude-1 的 1；全形數字（中文輸入法常見）先轉半形。
+// @ 後面是英數字時只去掉最長的 [A-Za-z0-9_-]（`@claude-1再討論2輪` 留下「再討論2輪」），否則去到空白或標點為止。
 function stripMentions(text) {
   return String(text ?? '')
+    .normalize('NFKC')
     .replace(DISCORD_MENTION_RE, ' ')
-    .replace(/(?<![A-Za-z0-9_.+-])[@＠][\p{L}\p{N}\p{M}_-]*/gu, ' ')
+    .replace(/(?<![A-Za-z0-9_.+-])[@＠](?:[A-Za-z0-9_][A-Za-z0-9_-]*|[^\s\p{P}]*)/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -528,11 +584,21 @@ export function applyDirectives(state, messages, room) {
         else if (state.isolation) parts.push(`隔離：${state.isolation}`);
         if (state.files) parts.push(`可改檔案：${state.files.join(', ')}`);
         if (state.assignBody) parts.push('細節見這則 [ASSIGN] 的內文');
-        // 同一個 branch 指派給多人時，worktree 模式下會互相衝突。
-        const many = targetsOf(m.content).broadcast || extractMentions(firstLineOf(m.content)).at.length > 1;
+        // 同一個 branch 指派給多人時，worktree 模式下會互相衝突。只數像 agent 名稱的 @（英數字開頭、不是保留字），
+        // `請和@前端協調` 這種提到角色的不算。
+        const first = firstLineOf(m.content);
+        const agentAts = extractMentions(first).at.filter((p) => {
+          const word = (first.slice(p).match(/^[A-Za-z0-9][A-Za-z0-9_-]*/) || [''])[0].toLowerCase();
+          return word && !RESERVED_NAMES.includes(word) && !BROADCAST.has(word);
+        });
+        const many = targetsOf(m.content).broadcast || agentAts.length > 1;
         const clash = branch && many ? '這則指派給了多人且指定同一個 branch，worktree 模式會衝突，請先用 ask 向主導者確認。' : '';
+        const badIso =
+          iso && iso !== 'worktree' && iso !== 'shared'
+            ? `isolation「${m.fields.isolation}」無效（只接受 worktree、shared），已當成沒寫${branch ? '，用預設的 worktree' : ''}；有疑問請 ask。`
+            : '';
         notes.push(
-          `你被指派（id=${m.id}）：${parts.join('；')}。${clash}先用 agentchat ack 回覆你的理解，再用 agentchat discuss 討論（本段上限 ${roundLimit(state, room)} 則）。`,
+          `你被指派（id=${m.id}）：${parts.join('；')}。${clash}${badIso}先用 agentchat ack 回覆你的理解，再用 agentchat discuss 討論（本段上限 ${roundLimit(state, room)} 則）。`,
         );
         break;
       }
@@ -634,6 +700,6 @@ export function phaseError(state, command, room) {
   const allowed = PHASE_COMMANDS[phase] ?? [];
   if (allowed.includes(command)) return null;
   const can = allowed.length ? `目前可用：${allowed.join('、')}` : LEFT_TEXT;
-  const hint = reminders({ ...state, phase }, { ...room, progressReminderMin: Infinity })[0];
+  const hint = phase === 'left' ? '' : reminders({ ...state, phase }, { ...room, progressReminderMin: Infinity })[0];
   return `目前階段是 ${phase}，不能用 ${command}。${can}。${hint || ''}`;
 }

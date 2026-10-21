@@ -180,6 +180,10 @@ export async function startMockDiscord(options = {}) {
     if (payload.username && String(payload.username).length > 80) {
       return json(res, 400, { message: 'Invalid Form Body: username must be 80 or fewer in length.', code: 50035 });
     }
+    // 真的 Discord 不接受含 discord、clyde 的 webhook username。
+    if (payload.username && /discord|clyde/i.test(payload.username)) {
+      return json(res, 400, { message: 'Invalid Form Body: username cannot contain "discord" or "clyde"', code: 50035 });
+    }
     const id = nextId();
     const msg = {
       id,

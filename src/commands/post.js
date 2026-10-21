@@ -1,5 +1,6 @@
 import { UserError } from '../errors.js';
-import { FIELD_KEYS } from '../protocol.js';
+import { FIELD_KEYS, parseMessageParts } from '../protocol.js';
+import { requireAgent } from '../context.js';
 import { BODY_OPTIONS, BODY_SOURCE_HELP, checkPostTag, publish, publishResult, readBody } from '../publish.js';
 
 export const summary = '發一般訊息 [INFO]（或 --tag DISCUSS），可帶標題、欄位與附檔';
@@ -35,11 +36,18 @@ function parseFields(list = []) {
 }
 
 export async function run(ctx) {
+  // 先確認身分：沒給 --as 或還沒 join 是結束碼 2，不該被標籤檢查搶先變成 3。
+  requireAgent(ctx);
   const tag = (ctx.values.tag ?? 'INFO').trim().toUpperCase();
   checkPostTag(tag);
   const fields = parseFields(ctx.values.field);
   const title = ctx.values.title !== undefined ? oneLine(ctx.values.title) : '';
   const body = await readBody(ctx);
+  // 內文自帶標籤列時照原樣送，--tag／--title／--field 不會生效；與其默默丟掉，不如請 agent 二選一。
+  const own = parseMessageParts(body).tag;
+  if (own && (ctx.values.title !== undefined || Object.keys(fields).length || (ctx.values.tag !== undefined && own !== tag))) {
+    throw new UserError(`內文已經以 [${own}] 標籤列開頭，不能再給 --tag（不同標籤）、--title 或 --field；請擇一`);
+  }
   if (!body && !title && !Object.keys(fields).length && !(ctx.values.file ?? []).length) {
     throw new UserError('沒有內容：請給內文、--title、--field 或 --file');
   }

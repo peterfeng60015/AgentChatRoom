@@ -13,13 +13,13 @@ import {
   roundLimit,
   splitMessage,
 } from './protocol.js';
-import { appendLog, clearWebhook, recordOwnMessages, updateAgent } from './state.js';
-import { ensureWebhook, fetchUnread, phaseOf, requireAgent, unreadLine } from './context.js';
+import { appendLog, clearWebhook, loadWebhook, recordOwnMessages, updateAgent } from './state.js';
+import { findToken } from './config.js';
+import { countUnread, ensureWebhook, phaseOf, requireAgent, unreadLine } from './context.js';
 import { section } from './render.js';
 
 const MB = 1024 * 1024;
 export const MAX_FILES = 10;
-export const MAX_TOTAL_BYTES = 25 * MB;
 export const PREVIEW_CHARS = 500;
 export const LONG_TEXT_NOTE = '（全文見附檔 message.md）';
 
@@ -74,7 +74,10 @@ export async function readBody(ctx, positionals = ctx.positionals) {
       throw new UserError(`讀不到 --body-file：${abs}`);
     }
   }
-  if (positionals.length === 1 && positionals[0] === '-') return (await readStdin(ctx.stdin)).trim();
+  if (positionals[0] === '-') {
+    if (positionals.length > 1) throw new UserError('`-` 表示從 stdin 讀內文，後面不能再接其他內文');
+    return (await readStdin(ctx.stdin)).trim();
+  }
   return positionals.join(' ').trim();
 }
 
@@ -145,8 +148,8 @@ export function loadFiles(paths, room, extraCount = 0, extraBytes = 0) {
     total += stat.size;
     return { abs, size: stat.size };
   });
-  if (total > MAX_TOTAL_BYTES) {
-    throw new UserError(`附檔總和超過 25 MB（${(total / MB).toFixed(1)} MB）`);
+  if (total > room.maxUploadMB * MB) {
+    throw new UserError(`附檔總和超過 ${room.maxUploadMB} MB（${(total / MB).toFixed(1)} MB；上限見 room.json 的 maxUploadMB）`);
   }
   return files.map(({ abs }) => ({
     filename: path.basename(abs),
@@ -174,6 +177,25 @@ export function planParts(resolved, original, room) {
     return { parts: splitMessage(preview), extraFiles: [md] };
   }
   return { parts: splitMessage(resolved), extraFiles: [] };
+}
+
+// §9：bot token 與 webhook token 不能出現在頻道裡。頻道裡別人的發言可能誘導 agent 把 .env 或 webhook 快取貼出來，
+// 送出前檢查內文與附檔，含有就拒絕（訊息裡不印 token）。
+export function guardSecrets(room, text, files) {
+  const secrets = [];
+  try {
+    const { token } = findToken();
+    if (token) secrets.push(token);
+  } catch {
+    // token 格式不對時之後的 API 呼叫會報錯，這裡不用處理。
+  }
+  const hook = loadWebhook(room.channelId);
+  if (hook?.token) secrets.push(hook.token);
+  for (const secret of secrets.filter((x) => x.length >= 16)) {
+    if (text.includes(secret) || files.some((f) => f.data.includes(secret))) {
+      throw new UserError('內文或附檔含有 bot token 或 webhook token，拒絕送出；不要把 .env 或 ~/.agentchat/webhooks 的內容貼到頻道');
+    }
+  }
 }
 
 // 經由本房 webhook 發言；快取的 webhook 被刪掉（404／401）時重新取得一次再試。
@@ -242,15 +264,21 @@ export async function publish(ctx, opts) {
   const plan = planParts(resolved, text, room);
   const extraBytes = plan.extraFiles.reduce((n, f) => n + f.data.length, 0);
   const files = [...plan.extraFiles, ...loadFiles(opts.files, room, plan.extraFiles.length, extraBytes)];
+  guardSecrets(room, resolved, files);
 
   let ids;
   try {
     ids = await sendParts(ctx, state, plan.parts, files);
   } catch (e) {
     if (e.sentIds?.length) {
+      // 帶標籤列的第一段已經送出，這則發言算數：照樣更新狀態（ask 記待答問題、discuss 加輪數、done 改階段）。
       updateAgent(room.channelId, state.name, (s) => {
         recordOwnMessages(s, e.sentIds);
+        if (tag === 'DISCUSS') s.discussRound = (s.discussRound ?? 0) + 1;
+        opts.mutate?.(s, e.sentIds);
       });
+      // 告訴 agent 哪幾段已經送出，免得整則重送造成重複。
+      e.message += `（已送出 ${e.sentIds.length}/${plan.parts.length} 段：${e.sentIds.join(', ')}；請只補送剩下的部分）`;
     }
     throw e;
   }
@@ -266,7 +294,7 @@ export async function publish(ctx, opts) {
   let unreadError = null;
   if (opts.countUnread !== false) {
     try {
-      unread = (await fetchUnread(ctx, updated, ids)).length;
+      unread = await countUnread(ctx, updated, ids);
     } catch (e) {
       unreadError = e.message;
     }
@@ -280,7 +308,7 @@ export function publishResult(result, room, { lines = [], data = {}, showUnread 
   const out = [`已送出 [${tag}]，訊息 ID：${ids[0]}${ids.length > 1 ? `（切成 ${ids.length} 則：${ids.join(', ')}）` : ''}`];
   if (files.length) out.push(`附檔：${files.join('、')}`);
   if (showUnread) {
-    const u = unreadLine(unread ?? 0);
+    const u = unreadLine(unread);
     if (u) out.push(u);
     if (unreadError) out.push(`未讀：無法取得（${unreadError}）`);
   }
@@ -295,7 +323,8 @@ export function publishResult(result, room, { lines = [], data = {}, showUnread 
       ids,
       tag,
       attachments: files,
-      unread: showUnread ? unread : null,
+      unread: showUnread && unread ? unread.count : null,
+      unreadCapped: showUnread && unread ? unread.capped : null,
       phase: phaseOf(state),
       reminders: rem,
       ...data,

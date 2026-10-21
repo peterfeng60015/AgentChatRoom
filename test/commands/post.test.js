@@ -192,7 +192,7 @@ describe('post 與發文共通處理', () => {
     assert.equal(env.mock.executions.length, 1, '只有 join 的那一則');
   });
 
-  test('附檔總和超過 25 MB → 結束碼 2；圖片給正確的 content type', async () => {
+  test('附檔總和超過 maxUploadMB（預設 10）→ 結束碼 2；圖片給正確的 content type', async () => {
     await env.close();
     env = await setup({ room: { maxFileMB: 10 } });
     await joined(env);
@@ -204,7 +204,7 @@ describe('post 與發文共通處理', () => {
     }
     let r = await env.run(['post', '--as', 'claude-1', ...files, 'x']);
     assert.equal(r.code, 2);
-    assert.match(r.stderr, /總和超過 25 MB/);
+    assert.match(r.stderr, /總和超過 10 MB/);
 
     const img = path.join(env.root, 'shot.PNG');
     fs.writeFileSync(img, 'fake');
