@@ -1,5 +1,6 @@
 // src/render.js 的單元測試（SPEC §6.3 wait 的輸出、§7.5）。
 // SPEC 沒規定確切版面，所以只驗必須出現的資訊：作者、角色、「提到你」、附檔名與大小、download 指令。
+// 附檔行的 download 指令照 §7.5：`agentchat download --as <as> <訊息ID>`，沒有 as 時 `--as <你的名稱>`。
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as render from '../../src/render.js';
@@ -54,19 +55,26 @@ describe('renderMessage', () => {
     assert.ok(!renderMessage(msg({ mentionsMe: false })).includes('提到你'));
   });
 
-  test('附檔：每個附檔一行，有檔名、大小與 agentchat download <id>', () => {
+  test('附檔：每個附檔一行，有檔名、大小與 agentchat download --as <as> <id>', () => {
     const m = msg({
       attachments: [
         { id: 'a1', filename: 'design.png', size: 2048, url: 'https://cdn.example/design.png', contentType: 'image/png' },
         { id: 'a2', filename: 'notes.md', size: 300, url: 'https://cdn.example/notes.md', contentType: 'text/markdown' },
       ],
     });
-    const lines = renderMessage(m).split('\n');
+    const lines = renderMessage(m, { as: 'claude-1' }).split('\n');
     for (const [name, size] of [['design.png', 2048], ['notes.md', 300]]) {
       const line = lines.find((l) => l.includes(name));
       assert.ok(line, `找不到 ${name} 的附檔行`);
       assert.ok(line.includes(fmtSize(size)), line);
-      assert.ok(line.includes(`agentchat download ${m.id}`), line);
+      assert.ok(line.includes(`agentchat download --as claude-1 ${m.id}`), line);
+    }
+  });
+
+  test('沒有 as 時，download 指令寫成 --as <你的名稱>', () => {
+    const m = msg({ attachments: [{ id: 'a1', filename: 'x.txt', size: 10 }] });
+    for (const s of [renderMessage(m), renderMessage(m, {})]) {
+      assert.ok(s.includes(`agentchat download --as <你的名稱> ${m.id}`), s);
     }
   });
 
@@ -77,9 +85,9 @@ describe('renderMessage', () => {
 
   test('只有附檔、沒有文字的訊息也顯示附檔行', () => {
     const m = msg({ content: '', tag: null, title: '', body: '', attachments: [{ id: 'a', filename: 'only.pdf', size: 5000 }] });
-    const s = renderMessage(m);
+    const s = renderMessage(m, { as: 'gemini-2' });
     assert.ok(s.includes('only.pdf'));
-    assert.ok(s.includes(`agentchat download ${m.id}`));
+    assert.ok(s.includes(`agentchat download --as gemini-2 ${m.id}`));
   });
 });
 
@@ -91,6 +99,14 @@ describe('renderMessages', () => {
     assert.ok(s.includes(renderMessage(a)));
     assert.ok(s.includes(renderMessage(b)));
     assert.ok(s.indexOf('第一則內容') < s.indexOf('第二則內容'));
+  });
+
+  test('as 傳給每一則的附檔行', () => {
+    const a = msg({ id: '11', attachments: [{ id: 'x', filename: 'a.png', size: 1 }] });
+    const b = msg({ id: '12', attachments: [{ id: 'y', filename: 'b.png', size: 1 }] });
+    const s = renderMessages([a, b], { as: 'codex-1' });
+    assert.ok(s.includes('agentchat download --as codex-1 11'), s);
+    assert.ok(s.includes('agentchat download --as codex-1 12'), s);
   });
 
   test('空陣列', () => {
@@ -114,8 +130,9 @@ describe('fmtSize', () => {
     assert.match(fmtSize(500), /^500\s*B$/);
   });
 
-  test('KB', () => {
+  test('KB（1 KB = 1024 B）', () => {
     assert.match(fmtSize(2048), /^2(\.0+)?\s*KB$/);
+    assert.match(fmtSize(500 * 1024), /^500(\.0+)?\s*KB$/);
   });
 
   test('MB', () => {

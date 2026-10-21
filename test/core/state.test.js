@@ -32,7 +32,7 @@ const mode = (file) => fs.statSync(file).mode & 0o777;
 // §5.1 列出的全部欄位。
 const STATE_FIELDS = [
   'version', 'name', 'vendor', 'model', 'channelId',
-  'role', 'task', 'branch', 'isolation', 'files',
+  'role', 'task', 'branch', 'isolation', 'files', 'assigned',
   'topic', 'phase', 'cursor', 'discussRound', 'discussLimit', 'ownMessageIds', 'pendingQuestionId',
   'joinedAt', 'lastActivityAt', 'lastProgressAt', 'workStartedAt', 'emptyWaitSince', 'left',
 ];
@@ -62,11 +62,12 @@ test('newAgent：身分與游標照參數', () => {
   assert.equal(s.cursor, '1300000000000000000');
 });
 
-test('newAgent：初始值（沒有分工、沒有議題、lobby、計數 0）', () => {
+test('newAgent：初始值（沒有分工、未指派、沒有議題、lobby、計數 0）', () => {
   const s = fresh();
   for (const key of ['role', 'task', 'branch', 'isolation', 'files', 'topic', 'discussLimit', 'pendingQuestionId']) {
     assert.equal(s[key], null, key);
   }
+  assert.equal(s.assigned, false);
   assert.equal(s.phase, 'lobby');
   assert.equal(s.discussRound, 0);
   assert.deepEqual(s.ownMessageIds, []);
