@@ -1,0 +1,17 @@
+{
+  "roomName": "default",
+  "guildId": "1550401210861756457",
+  "channelId": "1562304076115611710",
+  "moderatorUserId": "816128017460887562",
+  "webhookName": "agentchat",
+  "language": "zh-TW",
+  "defaultRepo": null,
+  "defaultBase": "main",
+  "maxDiscussionRounds": 3,
+  "waitTimeoutSec": 90,
+  "pollIntervalSec": 3,
+  "idleLimitMin": 60,
+  "progressReminderMin": 15,
+  "maxFileMB": 10,
+  "longTextChars": 6000
+}

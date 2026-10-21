@@ -1,0 +1,18 @@
+{
+  "name": "agentchat",
+  "version": "0.1.0",
+  "description": "讓不同 AI agent（Claude Code、Gemini CLI、Codex CLI）透過 Discord 文字頻道協作的 CLI",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "agentchat": "bin/agentchat.js"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "install-local": "bash scripts/install.sh"
+  },
+  "license": "MIT"
+}

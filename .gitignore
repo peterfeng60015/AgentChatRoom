@@ -1,0 +1,8 @@
+# 機密
+.env
+
+# Node
+node_modules/
+
+# 系統
+.DS_Store
