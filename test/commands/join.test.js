@@ -104,7 +104,8 @@ describe('join', () => {
 
   test('已 leave 的狀態再 join：建立新狀態並發 [JOIN]', async () => {
     await env.join('claude-1');
-    env.patchState('claude-1', { left: true, phase: 'left', role: '舊角色' });
+    env.patchState('claude-1', { role: '舊角色' });
+    assert.equal((await env.run(['leave', '--as', 'claude-1'])).code, 0);
     const r = await env.run(['join', '--as', 'claude-1', '--vendor', 'claude']);
     assert.equal(r.code, 0, r.stderr);
     const state = env.readState('claude-1');
@@ -144,14 +145,14 @@ describe('join', () => {
     env.mock.addMessage({ content: '[TOPIC] 登入功能\nrepo: /tmp/app\nrounds: 2\n\n請討論登入流程' });
     env.mock.addMessage({ content: '[ASSIGN] @gemini-1\nrole: 後端' });
     env.mock.addMessage({ content: '[ASSIGN] @claude-1\nrole: 前端\ntask: 做登入頁\nbranch: feat/login' });
-    env.mock.addMessage({ content: '[GO]' });
+    env.mock.addMessage({ author: 'human', content: '[GO] 不是主導者' });
     const r = await env.run(['join', '--as', 'claude-1', '--vendor', 'claude', '--json']);
     assert.equal(r.code, 0, r.stderr);
     const out = r.json();
     assert.equal(out.ok, true);
     assert.equal(out.topic.title, '登入功能');
-    assert.equal(out.assigns.length, 1);
-    assert.equal(out.state.phase, 'discussion', '只套用 [ASSIGN]，不套用 [GO]');
+    assert.deepEqual(out.directives.map((m) => m.tag), ['ASSIGN']);
+    assert.equal(out.state.phase, 'discussion');
     assert.equal(out.state.role, '前端');
     assert.equal(out.state.round.limit, 2);
 
@@ -163,6 +164,34 @@ describe('join', () => {
     assert.equal(state.assigned, true);
     const join = webhookMessages(env.mock).at(-1);
     assert.equal(join.author.username, 'claude-1 (前端)');
+  });
+
+  test('晚進房：議題之後的 [ASSIGN]、[GO]、[STOP] 都依序套用，直接到達正確階段', async () => {
+    env.mock.addMessage({ content: '[TOPIC] 登入', attachments: [{ filename: 'spec.md', data: 'x'.repeat(10) }] });
+    env.mock.addMessage({ content: '[ASSIGN] @claude-1\nrole: 前端\n\n細節：做登入頁' });
+    env.mock.addMessage({ content: '[GO] @前端' });
+    env.mock.addMessage({ content: '[STOP] @gemini-1' });
+    const r = await env.run(['join', '--as', 'claude-1', '--vendor', 'claude']);
+    assert.equal(r.code, 0, r.stderr);
+    const s = env.readState('claude-1');
+    assert.equal(s.phase, 'work');
+    assert.equal(s.assignBody, '細節：做登入頁');
+    assert.deepEqual(s.topic.attachments, [{ filename: 'spec.md', size: 10 }]);
+    assert.match(r.stdout, /之後對你生效的主導者指令：/);
+    assert.match(r.stdout, /\[GO\] @前端/);
+    assert.ok(!r.stdout.includes('[STOP] @gemini-1'), '沒對到我的指令不印');
+    assert.match(r.stdout, /議題附檔：spec\.md（10 B）→ agentchat download --as claude-1 \d+/);
+  });
+
+  test('已 leave 後重新進房也檢查頻道衝突（名稱比對不分大小寫）', async () => {
+    await env.join('claude-1');
+    await env.run(['leave', '--as', 'claude-1']);
+    const hook = env.mock.webhooks[0];
+    env.mock.addMessage({ author: 'webhook', webhookId: hook.id, username: 'CLAUDE-1', content: '[INFO] 另一台機器的 claude-1' });
+    const r = await env.run(['join', '--as', 'claude-1', '--vendor', 'claude']);
+    assert.equal(r.code, 3);
+    assert.match(r.stderr, /24 小時內有人用過/);
+    assert.equal((await env.run(['join', '--as', 'claude-1', '--vendor', 'claude', '--force'])).code, 0);
   });
 
   test('議題已 [CLOSE]：視為沒有進行中的議題', async () => {

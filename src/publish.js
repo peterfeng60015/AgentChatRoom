@@ -56,13 +56,35 @@ export function readStdin(stream = process.stdin) {
   });
 }
 
-// 內文來源：位置參數；位置參數是 `-`，或沒有位置參數且 stdin 不是 TTY 時讀 stdin。
-// 沒加引號的多個字會被 shell 拆成多個位置參數，這裡用空白接回去。
+// 內文來源：位置參數；只有位置參數是 `-` 時才讀 stdin。有些 CLI 的 shell 給的是不會關閉的 pipe，
+// 自動讀非 TTY 的 stdin 會一直卡住。沒加引號的多個字會被 shell 拆成多個位置參數，這裡用空白接回去。
 export async function readBody(ctx, positionals = ctx.positionals) {
   if (positionals.length === 1 && positionals[0] === '-') return (await readStdin(ctx.stdin)).trim();
-  if (positionals.length) return positionals.join(' ').trim();
-  if (ctx.stdin && !ctx.stdin.isTTY) return (await readStdin(ctx.stdin)).trim();
-  return '';
+  return positionals.join(' ').trim();
+}
+
+// post 只發 INFO 與 DISCUSS；其他 agent 標籤各有專用指令，走專用指令才會套用該指令的規則與狀態更新。
+export const POST_TAGS = ['INFO', 'DISCUSS'];
+const TAG_COMMAND = {
+  JOIN: 'join',
+  LEAVE: 'leave',
+  ACK: 'ack',
+  QUESTION: 'ask',
+  PROGRESS: 'progress',
+  DONE: 'done',
+  IDLE: null,
+};
+
+export function checkPostTag(tag) {
+  if (MODERATOR_TAGS.includes(tag)) throw new ProtocolError(`[${tag}] 是主導者專用標籤，agent 不能發`);
+  if (POST_TAGS.includes(tag)) return;
+  if (tag in TAG_COMMAND) {
+    const cmd = TAG_COMMAND[tag];
+    throw new UserError(
+      cmd ? `post 只發 [INFO] 或 [DISCUSS]；[${tag}] 請改用 agentchat ${cmd}` : `post 只發 [INFO] 或 [DISCUSS]；[${tag}] 由 wait 自動發出`,
+    );
+  }
+  throw new UserError(`不認得的標籤 ${tag}；post 只接受 INFO、DISCUSS`);
 }
 
 // 組出要送的全文。內文已經以標籤列開頭時照原樣送出；主導者標籤一律拒絕。
@@ -75,7 +97,8 @@ export function composeText({ command, tag, title = '', fields = {}, body = '', 
     if (MODERATOR_TAGS.includes(parsed.tag)) {
       throw new ProtocolError(`[${parsed.tag}] 是主導者專用標籤，agent 不能發`);
     }
-    if (command !== 'post' && parsed.tag !== tag) {
+    if (command === 'post') checkPostTag(parsed.tag);
+    else if (parsed.tag !== tag) {
       throw new UserError(`${command} 只發 [${tag}]，內文開頭的 [${parsed.tag}] 不符；請拿掉標籤列，或改用 agentchat post`);
     }
     return { tag: parsed.tag, text: raw.trim() };
@@ -170,7 +193,8 @@ export async function sendParts(ctx, { name, role }, parts, files = []) {
 }
 
 // 發言類指令的完整流程（§6.1、§6.2）。
-// opts：command、tag、title、fields、body、rawBody、files、requireBody、transform(text)、mutate(state, ids)。
+// opts：command、tag、title、fields、body、rawBody、files、requireBody、transform(text)、mutate(state, ids)、
+// countUnread（false 時不查未讀）。
 export async function publish(ctx, opts) {
   const room = ctx.room;
   const state = requireAgent(ctx);
@@ -225,22 +249,26 @@ export async function publish(ctx, opts) {
 
   let unread = null;
   let unreadError = null;
-  try {
-    unread = (await fetchUnread(ctx, updated, ids)).length;
-  } catch (e) {
-    unreadError = e.message;
+  if (opts.countUnread !== false) {
+    try {
+      unread = (await fetchUnread(ctx, updated, ids)).length;
+    } catch (e) {
+      unreadError = e.message;
+    }
   }
   return { state: updated, ids, tag, files: files.map((f) => f.filename), unread, unreadError };
 }
 
-// 發言類指令的共通輸出：訊息 ID、未讀、指令自己的補充、提醒。
-export function publishResult(result, room, { lines = [], data = {} } = {}) {
+// 發言類指令的共通輸出：訊息 ID、未讀、指令自己的補充、提醒。showUnread 為 false 時（leave）不印未讀。
+export function publishResult(result, room, { lines = [], data = {}, showUnread = true } = {}) {
   const { state, ids, tag, files, unread, unreadError } = result;
   const out = [`已送出 [${tag}]，訊息 ID：${ids[0]}${ids.length > 1 ? `（切成 ${ids.length} 則：${ids.join(', ')}）` : ''}`];
   if (files.length) out.push(`附檔：${files.join('、')}`);
-  const u = unreadLine(unread ?? 0);
-  if (u) out.push(u);
-  if (unreadError) out.push(`未讀：無法取得（${unreadError}）`);
+  if (showUnread) {
+    const u = unreadLine(unread ?? 0);
+    if (u) out.push(u);
+    if (unreadError) out.push(`未讀：無法取得（${unreadError}）`);
+  }
   out.push(...lines);
   const rem = reminders(state, room);
   const tail = section('提醒', rem);
@@ -252,7 +280,7 @@ export function publishResult(result, room, { lines = [], data = {} } = {}) {
       ids,
       tag,
       attachments: files,
-      unread,
+      unread: showUnread ? unread : null,
       phase: phaseOf(state),
       reminders: rem,
       ...data,

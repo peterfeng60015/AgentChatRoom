@@ -137,6 +137,7 @@ describe('doctor', () => {
     assert.ok(lines.some((l) => /^\[OK\] 房間設定：test-room（頻道 200000000000000002/.test(l)));
     assert.ok(lines.some((l) => /^\[OK\] bot 身分：agentchat-bot/.test(l)));
     assert.ok(lines.some((l) => /^\[OK\] Message Content Intent/.test(l)));
+    assert.ok(lines.some((l) => /^\[OK\] 主導者：Peter（peter，id=300000000000000003）/.test(l)));
     assert.ok(lines.some((l) => /^\[OK\] webhook：已建立新的 webhook/.test(l)));
     assert.match(lines.at(-1), /^總結：OK \d+、WARN 0、FAIL 0/);
     assert.equal(env.mock.executions.length, 0, '沒帶 --send-test 不發訊息');
@@ -189,11 +190,11 @@ describe('doctor', () => {
     assert.ok(!r.stdout.includes('wrong-token'));
   });
 
-  test('頻道是討論串 → WARN；頻道不屬於 guildId → FAIL，結束碼 2；沒有管理 webhook 權限 → FAIL', async () => {
+  test('頻道是討論串 → FAIL，結束碼 2；頻道不屬於 guildId → FAIL，結束碼 2；沒有管理 webhook 權限 → FAIL', async () => {
     env = await setup({ mock: { channelType: 11 } });
     let r = await env.run(['doctor']);
-    assert.equal(r.code, 0);
-    assert.match(r.stdout, /\[WARN\] 頻道：.*尚未支援討論串/);
+    assert.equal(r.code, 2);
+    assert.match(r.stdout, /\[FAIL\] 頻道：.*尚未支援討論串/);
 
     env.mock.config.channelType = 0;
     env.mock.config.channelGuildId = '999';
@@ -208,6 +209,13 @@ describe('doctor', () => {
     r = await env.run(['doctor']);
     assert.equal(r.code, 1);
     assert.match(r.stdout, /\[FAIL\] webhook：.*管理 Webhook/);
+  });
+
+  test('主導者 ID 查不到 → FAIL，結束碼 2（設定問題）', async () => {
+    env = await setup({ room: { moderatorUserId: '999999999999999999' } });
+    const r = await env.run(['doctor']);
+    assert.equal(r.code, 2);
+    assert.match(r.stdout, /\[FAIL\] 主導者：找不到使用者 999999999999999999/);
   });
 
   test('沒有讀取訊息歷史的權限 → FAIL', async () => {
@@ -243,6 +251,8 @@ describe('status、read、download、Discord 錯誤', () => {
   test('status：印出階段、角色、議題、輪數、游標、待答問題與未讀', async () => {
     await env.join('claude-1');
     env.patchState('claude-1', {
+      assignMessageId: '8',
+      assignBody: '細節第一行\n細節第二行',
       phase: 'discussion',
       role: '前端',
       task: '登入頁',
@@ -257,6 +267,7 @@ describe('status、read、download、Discord 錯誤', () => {
     assert.equal(r.code, 0, r.stderr);
     assert.match(r.stdout, /階段：discussion　角色：前端　討論：1\/3/);
     assert.match(r.stdout, /分工：登入頁/);
+    assert.match(r.stdout, /分工細節（\[ASSIGN\] id=8）：\n細節第一行\n細節第二行/);
     assert.match(r.stdout, /議題：「登入」（id=7）\n議題欄位：repo：\/tmp\/app　base：main　rounds：3（房間預設）/);
     assert.match(r.stdout, /待答問題：id=42/);
     assert.match(r.stdout, /未讀：1 則/);
@@ -285,6 +296,32 @@ describe('status、read、download、Discord 錯誤', () => {
     assert.equal(env.readState('claude-1').phase, 'lobby');
     assert.equal((await env.run(['read', '--last', '0'])).code, 2);
     assert.equal((await env.run(['read', '--last', 'x'])).code, 2);
+  });
+
+  test('read --id：只印那一則；ID 不合法 → 2；不存在 → 1', async () => {
+    await env.join('claude-1');
+    const topic = env.mock.addMessage({ content: '[TOPIC] 舊議題\n\n內容' });
+    for (let i = 0; i < 5; i++) env.mock.addMessage({ content: `之後 ${i}` });
+    const r = await env.run(['read', '--as', 'claude-1', '--id', topic.id]);
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, new RegExp(`^訊息 ${topic.id}：\n\\[\\d\\d/\\d\\d \\d\\d:\\d\\d:\\d\\d\\] 主導者 Peter  \\(id=${topic.id}\\)  ← 提到你\n\\[TOPIC\\] 舊議題`));
+    assert.ok(!r.stdout.includes('之後 0'));
+    assert.equal((await env.run(['read', '--id', 'abc'])).code, 2);
+    assert.equal((await env.run(['read', '--id', '123'])).code, 1);
+  });
+
+  test('renderMessage 格式：作者標示、角色、← 提到你在行尾、--- 分隔', async () => {
+    await env.join('claude-1');
+    const hook = env.mock.webhooks[0];
+    env.mock.addMessage({ author: 'webhook', webhookId: hook.id, username: 'gemini-1 (後端)', content: '@claude-1 嗨' });
+    env.mock.addMessage({ author: 'human', content: '路人' });
+    await env.run(['post', '--as', 'claude-1', '我的話']);
+    const r = await env.run(['read', '--as', 'claude-1', '--last', '3']);
+    const blocks = r.stdout.trimEnd().split('\n').slice(1).join('\n').split('\n---\n');
+    assert.equal(blocks.length, 3);
+    assert.match(blocks[0], /^\[\d\d\/\d\d \d\d:\d\d:\d\d\] agent gemini-1 \(後端\)  \(id=\d+\)  ← 提到你\n@claude-1 嗨$/);
+    assert.match(blocks[1], /^\[[^\]]+\] 人類 Someone  \(id=\d+\)\n路人$/);
+    assert.match(blocks[2], /^\[[^\]]+\] 你 claude-1  \(id=\d+\)\n\[INFO\]\n\n我的話$/);
   });
 
   test('download：預設路徑、檔名清理、外部資料提醒、--name 與 --out', async () => {

@@ -111,6 +111,8 @@ export function createClient(token, { apiBase, retryBaseMs = 1000 } = {}) {
 
     application: () => request('GET', '/applications/@me'),
 
+    user: (userId) => request('GET', `/users/${userId}`),
+
     channel: (channelId) => request('GET', `/channels/${channelId}`),
 
     messages,

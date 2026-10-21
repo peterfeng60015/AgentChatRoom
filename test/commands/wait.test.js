@@ -257,6 +257,73 @@ describe('wait', () => {
     assert.equal(env.readState('claude-1').phase, 'closed', 'closed 不受沒 @ 的 STOP 影響');
   });
 
+  test('[ASSIGN] 整組取代分工、記下 assignMessageId／assignBody、discussLimit 設回 null；[CONTINUE] 沒有 n 時也設回 null', async () => {
+    env.mock.addMessage({ content: '[TOPIC] t' });
+    env.mock.addMessage({ content: '[ASSIGN] @claude-1\nrole: 前端\ntask: 登入頁\nbranch: feat/a\nfiles: a.js\n\n第一份細節' });
+    env.mock.addMessage({ content: '[CONTINUE] 5 @claude-1' });
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    let s = env.readState('claude-1');
+    assert.equal(s.discussLimit, 5);
+    assert.equal(s.assignBody, '第一份細節');
+
+    const second = env.mock.addMessage({ content: '[ASSIGN] @claude-1\ntask: 改做文件' });
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    s = env.readState('claude-1');
+    assert.equal(s.role, null, '沒寫 role 就清成 null');
+    assert.equal(s.task, '改做文件');
+    assert.equal(s.branch, null);
+    assert.equal(s.isolation, null);
+    assert.equal(s.files, null);
+    assert.equal(s.assignMessageId, second.id);
+    assert.equal(s.assignBody, null);
+    assert.equal(s.discussLimit, null);
+
+    env.mock.addMessage({ content: '[CONTINUE] 2 @claude-1' });
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    assert.equal(env.readState('claude-1').discussLimit, 2);
+    env.mock.addMessage({ content: '[CONTINUE] @claude-1' });
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    assert.equal(env.readState('claude-1').discussLimit, null, '@claude-1 的 1 不能當成 n');
+  });
+
+  test('[STOP] 記下 phaseBeforeStop；停下前是 work 的會被沒 @ 的 GO 拉回，停下前已 done 的不會；連續 STOP 保留最早的階段', async () => {
+    env.patchState('claude-1', { phase: 'work', assigned: true });
+    env.mock.addMessage({ content: '[STOP]' });
+    env.mock.addMessage({ content: '[STOP] @claude-1' });
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    let s = env.readState('claude-1');
+    assert.equal(s.phase, 'stopped');
+    assert.equal(s.phaseBeforeStop, 'work');
+    env.mock.addMessage({ content: '[GO]' });
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    assert.equal(env.readState('claude-1').phase, 'work');
+
+    env.patchState('claude-1', { phase: 'done' });
+    env.mock.addMessage({ content: '[STOP]' });
+    env.mock.addMessage({ content: '[GO]' });
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    s = env.readState('claude-1');
+    assert.equal(s.phase, 'stopped', '停下前已 done，不被沒 @ 的 GO 拉回');
+    assert.equal(s.phaseBeforeStop, 'done');
+    env.mock.addMessage({ content: '[GO] @claude-1' });
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    assert.equal(env.readState('claude-1').phase, 'work', '有 @ 時照常生效');
+  });
+
+  test('第一行的 <@使用者ID> 不算 @：[GO] <@ID> 視同沒有 @；[ANSWER] to: 可帶 @ 且不分大小寫', async () => {
+    env.mock.addMessage({ content: '[TOPIC] t' });
+    env.mock.addMessage({ content: '[ASSIGN] @claude-1\nrole: 前端' });
+    env.mock.addMessage({ content: `[GO] <@${env.room.moderatorUserId}>` });
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    assert.equal(env.readState('claude-1').phase, 'work', '<@ID> 不算 @，所以對已指派的 agent 生效');
+
+    await env.run(['ask', '--as', 'claude-1', '問題']);
+    env.mock.addMessage({ content: '[ANSWER]\nto: ＠CLAUDE-1\n\n答案' });
+    const out = (await env.run(['wait', '--as', 'claude-1', '--timeout', '0', '--until', 'mention', '--json'])).json();
+    assert.equal(out.status, 'matched');
+    assert.equal(env.readState('claude-1').pendingQuestionId, null);
+  });
+
   test('[TOPIC] 清除分工、待答問題與 assigned；注意列出作業 repo 來源，不說「純討論」', async () => {
     env.patchState('claude-1', {
       phase: 'work', role: '前端', task: 't', branch: 'b', isolation: 'worktree', files: ['a'],
@@ -302,21 +369,51 @@ describe('wait', () => {
     assert.equal(env.readState('claude-1').pendingQuestionId, null);
   });
 
-  test('emptyWaitSince：開始時設定，有別人的新訊息就清掉', async () => {
+  test('emptyWaitSince：--timeout > 0 才開始計時；別人一般發言會清掉，別的 agent 的 JOIN／LEAVE／IDLE 不會', async () => {
     await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    assert.equal(env.readState('claude-1').emptyWaitSince, null, '--timeout 0 不計時');
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '1']);
     const since = env.readState('claude-1').emptyWaitSince;
     assert.ok(since);
-    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '1']);
     assert.equal(env.readState('claude-1').emptyWaitSince, since, '連續沒訊息時保留最早的時間');
+    agentSays('gemini-1', '[JOIN] gemini-1\nvendor: gemini');
+    agentSays('gemini-2', '[LEAVE] gemini-2');
+    agentSays('gemini-3', '[IDLE] gemini-3');
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '1']);
+    assert.equal(env.readState('claude-1').emptyWaitSince, since, '進出房與 IDLE 不重設');
     agentSays('gemini-1', 'hi');
-    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '1']);
     assert.equal(env.readState('claude-1').emptyWaitSince, null);
+  });
+
+  test('IDLE 只在 --timeout > 0 且不在 work 階段觸發；只有別人進出房時照樣觸發；[GO] 重設計時', async () => {
+    const old = new Date(Date.now() - 2 * 3600 * 1000).toISOString();
+    env.patchState('claude-1', { emptyWaitSince: old });
+    let out = (await env.run(['wait', '--as', 'claude-1', '--timeout', '0', '--json'])).json();
+    assert.equal(out.status, 'timeout', '--timeout 0 不觸發');
+
+    env.patchState('claude-1', { phase: 'work', assigned: true });
+    out = (await env.run(['wait', '--as', 'claude-1', '--timeout', '1', '--json'])).json();
+    assert.equal(out.status, 'timeout', 'work 階段不觸發');
+
+    env.patchState('claude-1', { phase: 'discussion' });
+    env.mock.addMessage({ content: '[GO]' });
+    out = (await env.run(['wait', '--as', 'claude-1', '--timeout', '1', '--until', 'mention', '--json'])).json();
+    assert.equal(out.phase, 'work');
+    assert.equal(env.readState('claude-1').emptyWaitSince, null, '進入 work 重設');
+
+    env.patchState('claude-1', { phase: 'discussion', emptyWaitSince: old });
+    agentSays('gemini-1', '[JOIN] gemini-1');
+    out = (await env.run(['wait', '--as', 'claude-1', '--timeout', '1', '--until', 'mention', '--json'])).json();
+    assert.equal(out.status, 'idle', '只有別人進房，仍然算無人回應');
+    assert.equal(out.messages.length, 1);
   });
 
   test('無人回應超過 idleLimitMin：自動發 [IDLE]，階段改為 idle，狀態回報 idle', async () => {
     const twoHoursAgo = new Date(Date.now() - 2 * 3600 * 1000).toISOString();
     env.patchState('claude-1', { emptyWaitSince: twoHoursAgo });
-    const r = await env.run(['wait', '--as', 'claude-1', '--timeout', '0', '--json']);
+    const r = await env.run(['wait', '--as', 'claude-1', '--timeout', '1', '--json']);
     assert.equal(r.code, 0, r.stderr);
     const out = r.json();
     assert.equal(out.status, 'idle');
@@ -328,22 +425,23 @@ describe('wait', () => {
     assert.ok(s.ownMessageIds.includes(last.id));
     assert.equal((await env.run(['post', '--as', 'claude-1', 'idle 不能 post'])).code, 3);
 
-    const text = await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    const text = await env.run(['wait', '--as', 'claude-1', '--timeout', '1']);
     assert.match(text.stdout, /^狀態：逾時，沒有新訊息/, '已經 idle 就不重發');
     assert.equal(env.mock.messages.filter((m) => m.content.startsWith('[IDLE]')).length, 1);
   });
 
-  test('無人回應但有新訊息：不發 [IDLE]', async () => {
+  test('無人回應但有別人一般發言：計時被重設，不發 [IDLE]（即使不符合 --until 條件）', async () => {
     env.patchState('claude-1', { emptyWaitSince: new Date(Date.now() - 2 * 3600 * 1000).toISOString() });
     agentSays('gemini-1', '我還在');
-    const out = (await env.run(['wait', '--as', 'claude-1', '--timeout', '0', '--json'])).json();
-    assert.equal(out.status, 'matched');
+    const out = (await env.run(['wait', '--as', 'claude-1', '--timeout', '1', '--until', 'moderator', '--json'])).json();
+    assert.equal(out.status, 'timeout');
     assert.ok(!env.mock.messages.some((m) => m.content.startsWith('[IDLE]')));
+    assert.equal(env.readState('claude-1').emptyWaitSince, null);
   });
 
   test('文字輸出：「idle」第一行、提醒段落', async () => {
     env.patchState('claude-1', { emptyWaitSince: new Date(Date.now() - 2 * 3600 * 1000).toISOString() });
-    const r = await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    const r = await env.run(['wait', '--as', 'claude-1', '--timeout', '1']);
     assert.match(r.stdout, /^狀態：已自動發出 \[IDLE\]\n階段：idle/);
     assert.match(r.stdout, /提醒\n- 已發過 \[IDLE\]/);
   });
@@ -364,7 +462,9 @@ describe('wait', () => {
     assert.equal((await env.run(['wait', '--as', 'claude-1', '--until', 'all'])).code, 2);
     assert.equal((await env.run(['wait', '--as', 'nobody', '--timeout', '0'])).code, 2);
     await env.run(['leave', '--as', 'claude-1']);
-    assert.equal((await env.run(['wait', '--as', 'claude-1', '--timeout', '0'])).code, 3);
+    const left = await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    assert.equal(left.code, 3);
+    assert.match(left.stderr, /你已離開這個房間；除非開這個 session 的使用者要求，不要重新 join/);
   });
 
   test('Discord 限流 429：依 retry_after 重試後成功', async () => {

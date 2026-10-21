@@ -40,15 +40,39 @@ describe('post 與發文共通處理', () => {
     assert.equal(state.emptyWaitSince, null);
   });
 
-  test('內文從 stdin 讀（-）；內文已有標籤列時照原樣送出', async () => {
+  test('內文只有位置參數是 - 時才讀 stdin；內文自帶 [INFO]／[DISCUSS] 標籤列時照原樣送出', async () => {
     await joined(env);
     let r = await env.run(['post', '--as', 'claude-1', '-'], { input: '從 stdin 來的內文\n第二行\n' });
     assert.equal(r.code, 0, r.stderr);
     assert.equal(env.mock.executions.at(-1).payload.content, '[INFO]\n\n從 stdin 來的內文\n第二行');
 
-    r = await env.run(['post', '--as', 'claude-1'], { input: '【progress】 50%\npercent: 50\n\n原樣' });
+    const before = env.mock.executions.length;
+    r = await env.run(['post', '--as', 'claude-1'], { input: '沒有 - 就不讀 stdin' });
+    assert.equal(r.code, 2, '沒有內文');
+    r = await env.run(['discuss', '--as', 'claude-1'], { input: '也不讀' });
+    assert.equal(r.code, 2);
+    assert.equal(env.mock.executions.length, before);
+
+    r = await env.run(['post', '--as', 'claude-1', '【info】 小結\nbranch: x\n\n原樣']);
     assert.equal(r.code, 0, r.stderr);
-    assert.equal(env.mock.executions.at(-1).payload.content, '【progress】 50%\npercent: 50\n\n原樣');
+    assert.equal(env.mock.executions.at(-1).payload.content, '【info】 小結\nbranch: x\n\n原樣');
+  });
+
+  test('post 只接受 INFO、DISCUSS：其他 agent 標籤 → 結束碼 2 並提示對應指令', async () => {
+    await joined(env, { phase: 'work' });
+    const before = env.mock.executions.length;
+    let r = await env.run(['post', '--as', 'claude-1', '--tag', 'progress', '50%']);
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /請改用 agentchat progress/);
+    r = await env.run(['post', '--as', 'claude-1', '[QUESTION] 偷問']);
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /請改用 agentchat ask/);
+    r = await env.run(['post', '--as', 'claude-1', '--tag', 'IDLE', 'x']);
+    assert.equal(r.code, 2);
+    r = await env.run(['post', '--as', 'claude-1', '[DONE] 偷完成']);
+    assert.equal(r.code, 2);
+    assert.equal(env.mock.executions.length, before);
+    assert.equal(env.readState('claude-1').phase, 'work');
   });
 
   test('拒絕主導者標籤：--tag 或內文標籤 → 結束碼 3，不送出', async () => {
@@ -185,9 +209,13 @@ describe('post 與發文共通處理', () => {
     assert.equal(r.code, 2);
     assert.match(r.stderr, /還沒進房/);
     await joined(env);
+    env.mock.addMessage({ author: 'human', content: '未讀的訊息' });
     r = await env.run(['leave', '--as', 'claude-1', '先走了']);
     assert.equal(r.code, 0, r.stderr);
     assert.equal(env.mock.executions.at(-1).payload.content, '[LEAVE] claude-1\n\n先走了');
+    assert.ok(!r.stdout.includes('未讀'), 'leave 不印未讀提示');
+    assert.match(r.stdout, /已離開，不要再 wait 或重新 join/);
+    assert.ok(!/請重新 agentchat join/.test(r.stdout));
     const state = env.readState('claude-1');
     assert.equal(state.left, true);
     assert.equal(state.phase, 'left');
