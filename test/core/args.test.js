@@ -9,10 +9,10 @@ const { UserError, DiscordError } = errors;
 const isUserError = (e) => e instanceof UserError;
 
 describe('parse（§6.1 共通選項）', () => {
-  test('沒有參數：json、help 預設 false，沒有位置參數', () => {
+  test('沒有參數：json、help 不成立，沒有位置參數', () => {
     const r = parse([]);
-    assert.equal(r.values.json, false);
-    assert.equal(r.values.help, false);
+    assert.ok(!r.values.json);
+    assert.ok(!r.values.help);
     assert.deepEqual(r.positionals, []);
   });
 

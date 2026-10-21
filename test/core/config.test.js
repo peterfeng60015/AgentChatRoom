@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const SRC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../src');
@@ -20,19 +21,29 @@ const savedEnv = { home: process.env.AGENTCHAT_HOME, token: process.env.DISCORD_
 process.env.AGENTCHAT_HOME = HOME;
 delete process.env.DISCORD_BOT_TOKEN;
 
-const config = await import(CONFIG_URL);
-const { UserError } = await import(pathToFileURL(path.join(SRC_DIR, 'errors.js')).href);
-const { parseEnv, getToken, roomFile, loadRoom } = config;
-
-after(() => {
+const restoreEnv = () => {
   if (savedEnv.home === undefined) delete process.env.AGENTCHAT_HOME;
   else process.env.AGENTCHAT_HOME = savedEnv.home;
   if (savedEnv.token === undefined) delete process.env.DISCORD_BOT_TOKEN;
   else process.env.DISCORD_BOT_TOKEN = savedEnv.token;
+};
+
+const config = await import(CONFIG_URL);
+if (config.TOOL_HOME !== HOME) {
+  // 工具目錄沒吃到 AGENTCHAT_HOME 時，後面的斷言會讀到真正的 .env，失敗訊息可能印出 token，所以整檔中止。
+  restoreEnv();
+  fs.rmSync(tmpRoot, { recursive: true, force: true });
+  throw new Error(`TOOL_HOME 沒有讀 AGENTCHAT_HOME（得到 ${config.TOOL_HOME}），中止整檔`);
+}
+const { UserError } = await import(pathToFileURL(path.join(SRC_DIR, 'errors.js')).href);
+const { parseEnv, getToken, roomFile, loadRoom } = config;
+
+after(() => {
+  restoreEnv();
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-const REQUIRED = { guildId: '100', channelId: '200', moderatorUserId: '300' };
+const REQUIRED = { guildId: '100000000000000001', channelId: '100000000000000002', moderatorUserId: '100000000000000003' };
 
 // §3.1 的全部預設值。
 const DEFAULTS = {
@@ -118,17 +129,18 @@ test('沒有 AGENTCHAT_HOME 時，工具目錄是 src/ 的上一層，與目前�
   assert.equal(c.ENV_FILE, path.join(c.TOOL_HOME, '.env'));
 });
 
-test('經由 symlink 載入時，工具目錄解析成實際路徑', async () => {
+test('經由 symlink 載入時，工具目錄解析成實際路徑', () => {
+  // Node 預設就把 import.meta.url 解析成實際路徑，在同一個行程裡驗不出實作有沒有 realpath；
+  // 用 --preserve-symlinks 的子行程經由 symlink 載入，才分得出來。
   const link = path.join(tmpRoot, 'link-to-tool');
   fs.symlinkSync(path.resolve(SRC_DIR, '..'), link, 'dir');
-  const saved = process.env.AGENTCHAT_HOME;
-  delete process.env.AGENTCHAT_HOME;
-  try {
-    const c = await import(`${pathToFileURL(path.join(link, 'src', 'config.js')).href}?via-symlink`);
-    assert.equal(c.TOOL_HOME, fs.realpathSync(path.resolve(SRC_DIR, '..')));
-  } finally {
-    process.env.AGENTCHAT_HOME = saved;
-  }
+  const env = { ...process.env };
+  delete env.AGENTCHAT_HOME;
+  const code = 'const c = await import(process.argv[1]); process.stdout.write(c.TOOL_HOME);';
+  const url = pathToFileURL(path.join(link, 'src', 'config.js')).href;
+  const r = spawnSync(process.execPath, ['--preserve-symlinks', '--input-type=module', '-e', code, url], { env, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, fs.realpathSync(path.resolve(SRC_DIR, '..')));
 });
 
 test('roomFile：沒給名稱是 config/room.json，--room 名稱是 config/rooms/<名稱>.json', () => {
@@ -168,6 +180,18 @@ for (const key of Object.keys(REQUIRED)) {
   });
 }
 
+test('loadRoom：ID 不是純數字字串丟 UserError（JSON 數字超過 2^53 會失準）', () => {
+  for (const [key, value] of [
+    ['guildId', 1550401210861756457],
+    ['channelId', '15623O4076115611710'],
+    ['moderatorUserId', '<@816128017460887562>'],
+    ['channelId', ' 1562304076115611710'],
+  ]) {
+    writeRoom({ ...REQUIRED, [key]: value });
+    assert.throws(() => loadRoom(), isUserError, `${key}=${JSON.stringify(value)}`);
+  }
+});
+
 test('loadRoom：JSON 不合法丟 UserError', () => {
   writeRoom('{ "guildId": "100", ');
   assert.throws(() => loadRoom(), isUserError);
@@ -188,6 +212,7 @@ test('loadRoom：--room 的設定檔也檢查必填欄位', () => {
   assert.throws(() => loadRoom('broken'), isUserError);
 });
 
+// 設定檔不存在、缺 token 都是設定錯誤：§6.1 規定結束碼 2，對應 §7.5 的 UserError。
 test('loadRoom：設定檔不存在丟 UserError', () => {
   assert.throws(() => loadRoom('no-such-room'), isUserError);
 });
@@ -200,6 +225,7 @@ test('loadEnv：讀 <工具目錄>/.env；檔案不存在時回空物件', async
   const none = path.join(tmpRoot, 'no-env-home');
   fs.mkdirSync(none, { recursive: true });
   const c = await importWith({ AGENTCHAT_HOME: none }, 'no-env');
+  assert.equal(c.TOOL_HOME, none);
   assert.deepEqual(c.loadEnv(), {});
 });
 
@@ -209,7 +235,8 @@ test('getToken：環境變數優先於 .env', () => {
   fs.writeFileSync(path.join(HOME, '.env'), 'DISCORD_BOT_TOKEN=from-file\n');
   process.env.DISCORD_BOT_TOKEN = 'from-env';
   try {
-    assert.equal(getToken(), 'from-env');
+    // 不用 assert.equal：失敗時不要把 token 印出來（§9）。
+    assert.ok(getToken() === 'from-env', '沒有優先用環境變數的 token');
   } finally {
     delete process.env.DISCORD_BOT_TOKEN;
   }
@@ -217,13 +244,14 @@ test('getToken：環境變數優先於 .env', () => {
 
 test('getToken：沒有環境變數時讀 <工具目錄>/.env', () => {
   fs.writeFileSync(path.join(HOME, '.env'), '# 註解\nDISCORD_BOT_TOKEN="from-file"\n');
-  assert.equal(getToken(), 'from-file');
+  assert.ok(getToken() === 'from-file', '沒有讀到 .env 的 token');
 });
 
 test('getToken：兩邊都沒有時丟 UserError', async () => {
   const empty = path.join(tmpRoot, 'empty-home');
   fs.mkdirSync(empty, { recursive: true });
   const c = await importWith({ AGENTCHAT_HOME: empty, DISCORD_BOT_TOKEN: undefined }, 'no-token');
+  assert.equal(c.TOOL_HOME, empty);
   assert.throws(() => c.getToken(), isUserError);
 });
 
@@ -232,5 +260,6 @@ test('getToken：.env 裡 token 是空值時也丟 UserError', async () => {
   fs.mkdirSync(blank, { recursive: true });
   fs.writeFileSync(path.join(blank, '.env'), 'DISCORD_BOT_TOKEN=\n');
   const c = await importWith({ AGENTCHAT_HOME: blank, DISCORD_BOT_TOKEN: undefined }, 'blank-token');
+  assert.equal(c.TOOL_HOME, blank);
   assert.throws(() => c.getToken(), isUserError);
 });

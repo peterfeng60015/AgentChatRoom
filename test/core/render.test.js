@@ -1,11 +1,14 @@
 // src/render.js 的單元測試（SPEC §6.3 wait 的輸出、§7.5）。
-// SPEC 沒規定確切版面，所以只驗必須出現的資訊：作者、角色、「提到你」、附檔名與大小、download 指令。
-// 附檔行的 download 指令照 §7.5：`agentchat download --as <as> <訊息ID>`，沒有 as 時 `--as <你的名稱>`。
+// §7.5 把 renderMessage 的格式寫死（SOP 依賴它），所以第一行、作者標示、「← 提到你」、附檔行、--- 分隔都逐字比對。
+// fmtSize 的格式 SPEC 沒規定，只驗單位與數值；用 1024 進位，與附檔上限 maxFileMB 的換算一致。
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as render from '../../src/render.js';
 
-const { renderMessage, renderMessages, fmtSize } = render;
+// fmtTime 印本地時間；固定成 UTC，讓預期值與執行機器的時區無關。
+process.env.TZ = 'UTC';
+
+const { renderMessage, renderMessages, fmtSize, fmtTime } = render;
 
 // normalize() 的輸出形狀（SPEC §7.1）。
 function msg(over = {}) {
@@ -114,6 +117,66 @@ describe('renderMessages', () => {
   });
 });
 
+describe('renderMessage 的固定格式（§7.5，SOP 依賴它）', () => {
+  const TS = '2026-10-21T04:05:06.000Z';
+  const first = (over, opts) => renderMessage(msg({ timestamp: TS, ...over }), opts).split('\n')[0];
+
+  test('fmtTime 是 MM/DD HH:MM:SS', () => {
+    assert.equal(fmtTime(TS), '10/21 04:05:06');
+  });
+
+  test('第一行 [MM/DD HH:MM:SS] <作者標示>  (id=<訊息ID>)，接著是訊息原文', () => {
+    const m = msg({ kind: 'moderator', author: 'Peter', authorRole: null, timestamp: TS, content: '[GO]\n\n開始執行' });
+    const lines = renderMessage(m, { as: 'claude-1' }).split('\n');
+    assert.equal(lines[0], `[10/21 04:05:06] 主導者 Peter  (id=${m.id})`);
+    assert.deepEqual(lines.slice(1), ['[GO]', '', '開始執行']);
+  });
+
+  test('作者標示：主導者、agent（有角色加 (角色)）、你、人類、bot', () => {
+    const id = msg().id;
+    assert.equal(first({ kind: 'moderator', author: 'Peter', authorRole: null }), `[10/21 04:05:06] 主導者 Peter  (id=${id})`);
+    assert.equal(first({ kind: 'agent', author: 'gemini-2', authorRole: '後端' }), `[10/21 04:05:06] agent gemini-2 (後端)  (id=${id})`);
+    assert.equal(first({ kind: 'agent', author: 'gemini-2', authorRole: null }), `[10/21 04:05:06] agent gemini-2  (id=${id})`);
+    assert.equal(first({ kind: 'self', author: 'claude-1', authorRole: null }), `[10/21 04:05:06] 你 claude-1  (id=${id})`);
+    assert.equal(first({ kind: 'human', author: 'Guest', authorRole: null }), `[10/21 04:05:06] 人類 Guest  (id=${id})`);
+    assert.equal(first({ kind: 'bot', author: 'GitHub', authorRole: null }), `[10/21 04:05:06] bot GitHub  (id=${id})`);
+  });
+
+  test('提到我或指令對我生效時，行尾加「  ← 提到你」', () => {
+    const id = msg().id;
+    const base = { kind: 'moderator', author: 'Peter', authorRole: null };
+    const plain = `[10/21 04:05:06] 主導者 Peter  (id=${id})`;
+    assert.equal(first({ ...base, mentionsMe: true }), `${plain}  ← 提到你`);
+    assert.equal(first({ ...base, targetsMe: true }), `${plain}  ← 提到你`);
+    assert.equal(first({ ...base, mentionsMe: true, targetsMe: true }), `${plain}  ← 提到你`);
+    assert.equal(first(base), plain);
+  });
+
+  test('附檔行：附檔：<檔名>（<大小>）→ agentchat download --as <as> <訊息ID>', () => {
+    const m = msg({ timestamp: TS, attachments: [{ id: 'a1', filename: 'design.png', size: 2048 }] });
+    const lines = renderMessage(m, { as: 'claude-1' }).split('\n');
+    assert.equal(lines.at(-1), `附檔：design.png（${fmtSize(2048)}）→ agentchat download --as claude-1 ${m.id}`);
+    assert.equal(renderMessage(m).split('\n').at(-1), `附檔：design.png（${fmtSize(2048)}）→ agentchat download --as <你的名稱> ${m.id}`);
+  });
+
+  test('多則之間用一行 --- 分隔', () => {
+    const a = msg({ id: '21', timestamp: TS, content: '第一則' });
+    const b = msg({ id: '22', timestamp: TS, kind: 'moderator', author: 'Peter', authorRole: null, content: '第二則' });
+    const opts = { as: 'claude-1' };
+    assert.equal(renderMessages([a, b], opts), `${renderMessage(a, opts)}\n---\n${renderMessage(b, opts)}`);
+  });
+});
+
+describe('kindLabel（§7.5 的作者標示）', () => {
+  test('五種身分的標示', () => {
+    assert.equal(render.kindLabel('moderator'), '主導者');
+    assert.equal(render.kindLabel('agent'), 'agent');
+    assert.equal(render.kindLabel('self'), '你');
+    assert.equal(render.kindLabel('human'), '人類');
+    assert.equal(render.kindLabel('bot'), 'bot');
+  });
+});
+
 describe('section', () => {
   test('有標題與每一個項目', () => {
     const s = render.section('提醒', ['第一項', '第二項']);
@@ -137,6 +200,6 @@ describe('fmtSize', () => {
 
   test('MB', () => {
     assert.match(fmtSize(5 * 1024 * 1024), /^5(\.0+)?\s*MB$/);
-    assert.match(fmtSize(1.5 * 1024 * 1024), /^1\.5\s*MB$/);
+    assert.match(fmtSize(1.5 * 1024 * 1024), /^1\.50*\s*MB$/);
   });
 });
