@@ -18,7 +18,8 @@ export function fmtTime(iso) {
   return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-export function renderMessage(m) {
+// as 是讀訊息的 agent 名稱，用來印出可以直接複製的 download 指令。
+export function renderMessage(m, { as } = {}) {
   let who;
   if (m.kind === 'moderator') who = `主導者 ${m.author}`;
   else if (m.kind === 'agent' || m.kind === 'self') {
@@ -35,13 +36,13 @@ export function renderMessage(m) {
     lines.push('（無文字內容。若對方明明有打字，代表 bot 的 Message Content Intent 沒開）');
   }
   for (const a of m.attachments) {
-    lines.push(`附檔：${a.filename}（${fmtSize(a.size)}）→ agentchat download ${m.id}`);
+    lines.push(`附檔：${a.filename}（${fmtSize(a.size)}）→ agentchat download --as ${as || '<你的名稱>'} ${m.id}`);
   }
   return lines.join('\n');
 }
 
-export function renderMessages(messages) {
-  return messages.map(renderMessage).join('\n---\n');
+export function renderMessages(messages, opts = {}) {
+  return messages.map((m) => renderMessage(m, opts)).join('\n---\n');
 }
 
 export function section(title, items) {

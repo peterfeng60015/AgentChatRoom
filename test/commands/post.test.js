@@ -93,6 +93,24 @@ describe('post 與發文共通處理', () => {
     assert.match(r.stdout, /切成 \d+ 則/);
   });
 
+  test('切段時 code fence 兩邊補成對，fence 內的超長單行也一樣；不留空區塊', async () => {
+    await joined(env);
+    const body = `說明\n\`\`\`js\n${'x'.repeat(4500)}\nconst a = 1;\n\`\`\`\n結尾`;
+    const skip = env.mock.executions.length;
+    const r = await env.run(['post', '--as', 'claude-1', body]);
+    assert.equal(r.code, 0, r.stderr);
+    const parts = env.mock.executions.slice(skip).map((e) => e.payload.content);
+    assert.ok(parts.length >= 3);
+    for (const p of parts) {
+      assert.ok(p.length <= 2000);
+      const fences = p.split('\n').filter((l) => /^\s*```/.test(l));
+      assert.equal(fences.length % 2, 0, `fence 不成對：${p.slice(0, 40)}`);
+      assert.ok(!/```js\n```/.test(p), '不該有空的 code block');
+    }
+    assert.equal(parts.map((p) => p.replace(/\n\(\d+\/\d+\)$/, '')).join('').replace(/```(js)?/g, '').replace(/\n/g, '').length,
+      `[INFO]說明${'x'.repeat(4500)}const a = 1;結尾`.length);
+  });
+
   test('超過 longTextChars：只送表頭 + 前 500 字 + 提示，全文附 message.md', async () => {
     await env.close();
     env = await setup({ room: { longTextChars: 3000 } });
@@ -244,11 +262,11 @@ describe('discuss、ack、ask、progress、done 的階段與欄位', () => {
 
   test('ask：第一行真的 @ 主導者、allowed_mentions 放行主導者、記下 pendingQuestionId', async () => {
     await joined(env, { phase: 'stopped' });
-    const r = await env.run(['ask', '--as', 'claude-1', '要用哪個資料庫？']);
+    const r = await env.run(['ask', '--as', 'claude-1', '要用哪個資料庫？\nA 或 B']);
     assert.equal(r.code, 0, r.stderr);
     const ex = env.mock.executions.at(-1);
     const mod = env.room.moderatorUserId;
-    assert.equal(ex.payload.content, `[QUESTION] <@${mod}>\n\n要用哪個資料庫？`);
+    assert.equal(ex.payload.content, `[QUESTION] <@${mod}> 要用哪個資料庫？\n\nA 或 B`);
     assert.deepEqual(ex.payload.allowed_mentions.users, [mod]);
     assert.deepEqual(env.mock.lastMessage().mentions, [{ id: mod }], '假 Discord 依 allowed_mentions 算出會通知主導者');
     assert.equal(env.readState('claude-1').pendingQuestionId, ex.id);
@@ -262,6 +280,12 @@ describe('discuss、ack、ask、progress、done 的階段與欄位', () => {
     assert.equal(env.mock.executions.at(-1).payload.content, `[QUESTION] <@${env.room.moderatorUserId}> 資料庫\n\n用哪個？`);
     env.patchState('claude-1', { phase: 'closed' });
     assert.equal((await env.run(['ask', '--as', 'claude-1', '還能問嗎'])).code, 3);
+    env.patchState('claude-1', { phase: 'lobby' });
+    assert.equal((await env.run(['ask', '--as', 'claude-1', '[TOPIC] 偷渡'])).code, 3, '問題第一行是主導者標籤也要拒絕');
+    assert.equal((await env.run(['ask', '--as', 'claude-1', '[INFO] 不是問題'])).code, 2);
+    const one = await env.run(['ask', '--as', 'claude-1', '單行問題']);
+    assert.equal(one.code, 0, one.stderr);
+    assert.equal(env.mock.executions.at(-1).payload.content, `[QUESTION] <@${env.room.moderatorUserId}> 單行問題`);
   });
 
   test('progress：只在 work 階段；--percent 必填且 0 到 100；更新 lastProgressAt', async () => {

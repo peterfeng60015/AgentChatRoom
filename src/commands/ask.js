@@ -9,11 +9,14 @@ export async function run(ctx) {
   const room = ctx.room;
   const mention = `<@${room.moderatorUserId}>`;
   const body = await readBody(ctx);
+  // §6.3：第一行是 `[QUESTION] <@主導者> <問題的第一行>`，其餘行是內文。
+  const [firstLine, ...restLines] = body.split('\n');
   const result = await publish(ctx, {
     command: 'ask',
     tag: 'QUESTION',
-    title: mention,
-    body,
+    title: `${mention} ${firstLine.trim()}`.trim(),
+    body: restLines.join('\n').trim(),
+    rawBody: body,
     files: ctx.values.file,
     requireBody: true,
     // 內文自帶 [QUESTION] 標籤列時照原樣送，但第一行一定要有主導者 mention，否則不會通知。

@@ -24,7 +24,7 @@ export async function run(ctx) {
   const list = normalizeAll(raws, room, self);
   const head = list.length ? `頻道最近 ${list.length} 則（舊的在前）：` : '頻道目前沒有訊息。';
   return {
-    text: list.length ? [head, renderMessages(list)] : head,
+    text: list.length ? [head, renderMessages(list, { as: self?.name })] : head,
     data: { messages: list.map(publicMessage) },
   };
 }

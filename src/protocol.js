@@ -51,13 +51,11 @@ const BROADCAST = new Set(BROADCAST_NAMES);
 const TAG_LINE_RE = /^\s*(?:\[\s*([A-Za-z]+)\s*\]|【\s*([A-Za-z]+)\s*】|［\s*([A-Za-z]+)\s*］)(.*)$/;
 const FIELD_LINE_RE = /^\s*([A-Za-z]+)\s*[:：]\s*(.*)$/;
 
-// @ 前面不能是文字（避免把 email 當成 mention），名稱可以是中文；名稱遇到空白或標點就結束。
-const MENTION_RE = /(?<![\p{L}\p{N}\p{M}_])[@＠]([\p{L}\p{N}\p{M}_-]+)/gu;
+// §4.4 的 mention：@ 前面是行首或不是 email 帳號字元（中文緊接也算）。
+// @ 後第一個字是英數字或底線時，token 是最長的 [A-Za-z0-9_-]；否則取到下一個空白或標點為止。
+const MENTION_RE = /(?<![A-Za-z0-9_.+-])[@＠](?:([A-Za-z0-9_][A-Za-z0-9_-]*)|([^\s\p{P}]+))/gu;
 const DISCORD_USER_RE = /<@!?(\d+)>/g;
-// 中文習慣不空格，所以主導者別名只擋 email 會用到的英數字邊界：`請@主導者看`、`請@moderator看` 都要換。
-const MODERATOR_ALIAS_RE = /(?<![A-Za-z0-9_.%+-])[@＠](?:(moderator)(?![A-Za-z0-9_-])|主導者)/giu;
-// 英數字名稱後面直接接中文（`@claude-1看`）時，英數字部分本身就是完整的名稱。
-const ASCII_PREFIX_RE = /^([A-Za-z0-9_-]+)[^A-Za-z0-9_-]/;
+const MODERATOR_ALIASES = new Set(['moderator', '主導者']);
 
 export function validateAgentName(name) {
   if (!name || !NAME_RE.test(name)) {
@@ -109,13 +107,7 @@ export function extractMentions(content = '') {
   const text = String(content ?? '');
   const users = [...text.matchAll(DISCORD_USER_RE)].map((m) => m[1]);
   const stripped = text.replace(DISCORD_USER_RE, ' ');
-  const names = [];
-  for (const m of stripped.matchAll(MENTION_RE)) {
-    const token = m[1].toLowerCase();
-    names.push(token);
-    const prefix = token.match(ASCII_PREFIX_RE);
-    if (prefix) names.push(prefix[1]);
-  }
+  const names = [...stripped.matchAll(MENTION_RE)].map((m) => (m[1] ?? m[2]).toLowerCase());
   return { users, names };
 }
 
@@ -139,7 +131,14 @@ export function targetsOf(content = '') {
   return { names: [...new Set(names.filter((x) => !BROADCAST.has(x)))], broadcast };
 }
 
+// 被回覆的訊息是不是我發的：最近的 ownMessageIds，加上待答問題（掉出最近 50 則也認得）。
+export function isReplyToMe(replyTo, self) {
+  if (!replyTo || !self) return false;
+  return (self.ownMessageIds || []).includes(replyTo) || self.pendingQuestionId === replyTo;
+}
+
 // §4.4「指令對我生效」。只有主導者的指令算數，所以帶了 kind 且不是 moderator 一律不生效。
+// self 是 agent 狀態：沒 @ 的 [GO]／[CONTINUE]／[STOP] 要看 assigned 與 phase。
 export function isTargeted(msg, self) {
   if (!msg || !self || !self.name) return false;
   if (msg.kind && msg.kind !== 'moderator') return false;
@@ -149,32 +148,41 @@ export function isTargeted(msg, self) {
   const { names, broadcast } = targetsOf(content);
   const name = String(self.name).toLowerCase();
   const role = self.role ? String(self.role).toLowerCase() : null;
-  const repliesToMe = Boolean(msg.replyTo) && (self.ownMessageIds || []).includes(msg.replyTo);
+  const phase = self.left ? 'left' : self.phase;
+  const named = broadcast || names.includes(name);
   switch (tag) {
     case 'TOPIC':
     case 'CLOSE':
       return true;
     case 'ASSIGN':
-      return broadcast || names.includes(name);
+      return named;
     case 'ANSWER': {
       const to = String(msg.fields?.to ?? '')
         .split(/[,，、\s]+/)
         .map((x) => x.replace(/^[@＠]/, '').toLowerCase())
         .filter(Boolean);
-      return broadcast || names.includes(name) || to.includes(name) || repliesToMe;
+      return named || to.includes(name) || isReplyToMe(msg.replyTo, self);
     }
     case 'GO':
     case 'CONTINUE':
-    case 'STOP':
-      if (!broadcast && names.length === 0) return true;
-      return broadcast || names.includes(name) || (role !== null && names.includes(role));
+    case 'STOP': {
+      if (broadcast || names.length) {
+        if (phase === 'left') return false;
+        return named || (role !== null && names.includes(role));
+      }
+      if (tag === 'STOP') return !['closed', 'idle', 'left'].includes(phase);
+      return self.assigned === true && (phase === 'discussion' || phase === 'stopped');
+    }
     default:
       return false;
   }
 }
 
+// 主導者別名用和其他 mention 一樣的 token 規則：`請@主導者 看` 會換，`@主導者請看` 的 token 是「主導者請看」不換。
 export function resolveMentions(text, room) {
-  return String(text ?? '').replace(MODERATOR_ALIAS_RE, `<@${room.moderatorUserId}>`);
+  return String(text ?? '').replace(MENTION_RE, (whole, ascii, other) =>
+    MODERATOR_ALIASES.has((ascii ?? other).toLowerCase()) ? `<@${room.moderatorUserId}>` : whole,
+  );
 }
 
 // 依 code point 截斷，避免把 emoji 等代理對切成半個；長度用 UTF-16 計，保證不超過上限。
@@ -209,14 +217,15 @@ export function isSelfName(username = '', name) {
   return u === name || u.startsWith(`${name} (`);
 }
 
-// 角色會出現在 webhook 顯示名稱 `名稱 (角色)` 與 @角色 裡，所以去掉會破壞格式或觸發 mention 的字元。
+// 角色會出現在 webhook 顯示名稱 `名稱 (角色)` 與 @角色 裡：刪掉會破壞格式或觸發 mention 的字元，
+// 空白換成 -，讓角色一定能用 @角色 提到。
 export function sanitizeRole(role) {
   if (role === undefined || role === null) return null;
   const cleaned = String(role)
-    .replace(/[()（）[\]［］【】{}｛｝<>＜＞@＠#＃:：`\r\n]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return truncate(cleaned, ROLE_LIMIT).trim() || null;
+    .replace(/[()（）[\]［］【】{}｛｝<>＜＞@＠#:：`]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return truncate(cleaned, ROLE_LIMIT) || null;
 }
 
 // §4.5 作者身分。opts.webhookId 是本房 webhook；不知道時所有 webhook 訊息都算本房。
@@ -279,8 +288,7 @@ export function normalize(raw, room, self, opts = {}) {
     })),
   };
   if (self && kind !== 'self') {
-    const repliesToMe = Boolean(replyTo) && (self.ownMessageIds || []).includes(replyTo);
-    msg.mentionsMe = isMentioned(content, self) || repliesToMe;
+    msg.mentionsMe = isMentioned(content, self) || isReplyToMe(replyTo, self);
     msg.targetsMe = kind === 'moderator' && MODERATOR_TAGS.includes(parsed.tag) && isTargeted(msg, self);
   }
   return msg;
@@ -299,9 +307,15 @@ export function splitMessage(text, limit = DISCORD_MESSAGE_LIMIT) {
 
   const size = (lines, extra) => (lines.length ? lines.join('\n').length + 1 : 0) + extra.length;
   const flush = () => {
-    if (current && current.length > (fenceOpen ? 1 : 0) && current.some((l) => l.trim() !== '')) {
+    let close = Boolean(fenceOpen);
+    // fence 剛好在這段最後一行打開、還沒有內容：把開頭行留給下一段，不留下空的區塊。
+    if (current && fenceOpen && current.length > 1 && /^\s*```/.test(current[current.length - 1])) {
+      current.pop();
+      close = false;
+    }
+    if (current && current.length > (close ? 1 : 0) && current.some((l) => l.trim() !== '')) {
       const body = current.join('\n').replace(/\n+$/, '');
-      chunks.push(fenceOpen ? body + FENCE_CLOSE : body);
+      chunks.push(close ? body + FENCE_CLOSE : body);
     }
     current = null;
   };
@@ -350,10 +364,13 @@ export function roundLimit(state, room) {
   return room.maxDiscussionRounds;
 }
 
-function topicRepoText(fields, room) {
-  const repo = fields.repo || room.defaultRepo;
-  if (!repo) return '沒有指定作業 repo（純討論）';
-  return `作業 repo：${repo}，基準分支：${fields.base || room.defaultBase}`;
+// §5.5 作業 repo 的來源：[TOPIC] 的 repo > room.defaultRepo > 目前工作目錄。只有分工帶 branch 或 isolation 時才用得到。
+export function topicRepoText(fields = {}, room) {
+  let repo;
+  if (fields.repo) repo = `${fields.repo}（[TOPIC] 指定）`;
+  else if (room.defaultRepo) repo = `${room.defaultRepo}（房間預設）`;
+  else repo = '未指定，有 branch 分工時用目前目錄';
+  return `作業 repo：${repo}；基準分支：${fields.base || room.defaultBase}`;
 }
 
 function splitFiles(value) {
@@ -382,9 +399,14 @@ export function applyDirectives(state, messages, room) {
     state.emptyWaitSince = null;
     if (m.kind !== 'moderator') continue;
 
-    if (state.pendingQuestionId && m.replyTo === state.pendingQuestionId && m.tag !== 'ANSWER') {
-      notes.push(`主導者回覆了你的問題（id=${m.id}），請依回覆繼續。`);
-      state.pendingQuestionId = null;
+    // §4.4：主導者用 Discord 回覆我的任何一則訊息，或不加標籤直接 @ 我的名稱，都視為回答了待答問題。
+    if (state.pendingQuestionId && m.tag !== 'ANSWER') {
+      const byReply = isReplyToMe(m.replyTo, state);
+      const byName = !m.tag && extractMentions(m.content).names.includes(String(state.name).toLowerCase());
+      if (byReply || byName) {
+        notes.push(`主導者${byReply ? '回覆了你' : '提到你'}（id=${m.id}），你的待答問題視為已回答，請依內容繼續。`);
+        state.pendingQuestionId = null;
+      }
     }
     if (!MODERATOR_TAGS.includes(m.tag) || !isTargeted(m, state)) continue;
 
@@ -397,12 +419,14 @@ export function applyDirectives(state, messages, room) {
         state.branch = null;
         state.isolation = null;
         state.files = null;
+        state.assigned = false;
+        state.pendingQuestionId = null;
         state.discussRound = 0;
         state.discussLimit = null;
         state.lastProgressAt = null;
         state.workStartedAt = null;
         notes.push(
-          `新議題「${m.title || '(未命名)'}」（id=${m.id}）：${topicRepoText(m.fields, room)}。等主導者 [ASSIGN]：agentchat wait --until mention。`,
+          `新議題「${m.title || '(未命名)'}」（id=${m.id}）。${topicRepoText(m.fields, room)}。等主導者 [ASSIGN]：agentchat wait --until mention。`,
         );
         break;
       case 'ASSIGN': {
@@ -413,6 +437,7 @@ export function applyDirectives(state, messages, room) {
         state.branch = branch;
         state.isolation = iso === 'worktree' || iso === 'shared' ? iso : branch ? 'worktree' : null;
         state.files = splitFiles(m.fields.files);
+        state.assigned = true;
         state.phase = 'discussion';
         state.discussRound = 0;
         const parts = [`角色：${state.role || '(未指定)'}`];

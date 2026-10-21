@@ -4,7 +4,7 @@ import { ProtocolError, UserError } from '../errors.js';
 import { applyDirectives, buildMessage, reminders } from '../protocol.js';
 import { kindLabel, renderMessages, section } from '../render.js';
 import { appendLog, recordOwnMessages, updateAgent } from '../state.js';
-import { normalizeAll, phaseOf, publicMessage, requireAgent, roundInfo, summaryLine } from '../context.js';
+import { joinHint, normalizeAll, phaseOf, publicMessage, requireAgent, roundInfo, summaryLine } from '../context.js';
 import { sendParts } from '../publish.js';
 
 export const summary = '長輪詢等新訊息，套用主導者指令並移動游標';
@@ -36,7 +36,7 @@ export async function run(ctx) {
   const room = ctx.room;
   const initial = requireAgent(ctx);
   if (initial.left || initial.phase === 'left') {
-    throw new ProtocolError('你已離開房間（leave），要再參加請重新 agentchat join');
+    throw new ProtocolError(`你已離開，要再參加請重新 join（${joinHint(initial.name)}）`);
   }
   const timeout = toInt(ctx.values.timeout, Math.min(MAX_TIMEOUT, Math.round(room.waitTimeoutSec)), '--timeout');
   if (timeout > MAX_TIMEOUT) throw new UserError(`--timeout 範圍是 0 到 ${MAX_TIMEOUT} 秒`);
@@ -110,7 +110,7 @@ export async function run(ctx) {
   }[status];
   const rem = reminders(updated, room);
   const text = [statusLine, summaryLine(updated, room)];
-  if (collected.length) text.push('', renderMessages(collected));
+  if (collected.length) text.push('', renderMessages(collected, { as: updated.name }));
   const n = section('注意', notes);
   if (n) text.push(n);
   const r = section('提醒', rem);

@@ -48,18 +48,58 @@ describe('join', () => {
     assert.equal(webhookMessages(env.mock)[0].content, '[JOIN] gemini-1\nvendor: gemini');
   });
 
-  test('重新連線：保留角色、階段與游標，不重發 [JOIN]', async () => {
+  test('--model、--host 太長或含換行：壓成一行並截到 100 字，[JOIN] 不會超過 Discord 上限', async () => {
+    const r = await env.run(['join', '--as', 'codex-1', '--vendor', 'codex', '--model', `gpt\n${'x'.repeat(3000)}`, '--host', 'h'.repeat(500)]);
+    assert.equal(r.code, 0, r.stderr);
+    const content = webhookMessages(env.mock)[0].content;
+    const [, , model, host] = content.split('\n');
+    assert.equal(model, `model: gpt ${'x'.repeat(96)}`);
+    assert.equal(host, `host: ${'h'.repeat(100)}`);
+    assert.equal(env.readState('codex-1').model.length, 100);
+  });
+
+  test('本機同名使用中：沒帶 --resume／--force → 結束碼 3，寫明使用中與最後活動時間，不發訊息', async () => {
+    await env.join('claude-1');
+    const count = env.mock.messages.length;
+    const r = await env.run(['join', '--as', 'claude-1', '--vendor', 'claude']);
+    assert.equal(r.code, 3);
+    assert.match(r.stderr, /這個名稱在本機使用中：claude-1（最後活動時間 \d\d\/\d\d \d\d:\d\d:\d\d/);
+    assert.match(r.stderr, /新開的 session 請換名稱；確定要接手這個身分才加 --resume/);
+    assert.equal(env.mock.messages.length, count);
+    assert.equal((await env.run(['join', '--as', 'claude-1', '--vendor', 'claude', '--resume', '--force'])).code, 2);
+  });
+
+  test('--resume：接手既有身分，保留角色、階段與游標，不重發 [JOIN]，第一行固定', async () => {
     await env.join('claude-1');
     env.patchState('claude-1', { phase: 'discussion', role: '前端', cursor: '123' });
     const count = env.mock.messages.length;
-    const r = await env.run(['join', '--as', 'claude-1', '--vendor', 'claude']);
+    const r = await env.run(['join', '--as', 'claude-1', '--vendor', 'claude', '--resume']);
     assert.equal(r.code, 0, r.stderr);
-    assert.match(r.stdout, /重新連線/);
+    assert.equal(r.stdout.split('\n')[0], '重新連線：接手既有身分 claude-1，沒有發 [JOIN]');
+    assert.match(r.stdout, /階段：discussion　角色：前端/);
     assert.equal(env.mock.messages.length, count, '不應再發訊息');
     const state = env.readState('claude-1');
     assert.equal(state.phase, 'discussion');
     assert.equal(state.role, '前端');
     assert.equal(state.cursor, '123');
+  });
+
+  test('--force：捨棄本機舊狀態，建立新身分並發 [JOIN]', async () => {
+    await env.join('claude-1');
+    env.patchState('claude-1', { phase: 'work', role: '前端' });
+    const r = await env.run(['join', '--as', 'claude-1', '--vendor', 'claude', '--force']);
+    assert.equal(r.code, 0, r.stderr);
+    const state = env.readState('claude-1');
+    assert.equal(state.phase, 'lobby');
+    assert.equal(state.role, null);
+    assert.equal(state.assigned, false);
+    assert.equal(webhookMessages(env.mock).filter((m) => m.content.startsWith('[JOIN]')).length, 2);
+  });
+
+  test('--resume 但本機沒有狀態：照一般流程進房', async () => {
+    const r = await env.run(['join', '--as', 'claude-1', '--vendor', 'claude', '--resume']);
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /^已進房/);
   });
 
   test('已 leave 的狀態再 join：建立新狀態並發 [JOIN]', async () => {
@@ -120,6 +160,7 @@ describe('join', () => {
     assert.equal(state.task, '做登入頁');
     assert.equal(state.branch, 'feat/login');
     assert.equal(state.isolation, 'worktree');
+    assert.equal(state.assigned, true);
     const join = webhookMessages(env.mock).at(-1);
     assert.equal(join.author.username, 'claude-1 (前端)');
   });
