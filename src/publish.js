@@ -67,8 +67,10 @@ export async function readBody(ctx, positionals = ctx.positionals) {
 
 // 組出要送的全文。內文已經以標籤列開頭時照原樣送出；主導者標籤一律拒絕。
 // 專用指令（discuss、ack…）的內文若是別的 agent 標籤就拒絕，避免繞過該指令的規則。
-export function composeText({ command, tag, title = '', fields = {}, body = '' }) {
-  const parsed = parseMessageParts(body);
+// rawBody 是使用者給的原始內文；指令自己拆過內文時（ask 把第一行放進標題）用它判斷標籤。
+export function composeText({ command, tag, title = '', fields = {}, body = '', rawBody }) {
+  const raw = rawBody ?? body;
+  const parsed = parseMessageParts(raw);
   if (parsed.tag) {
     if (MODERATOR_TAGS.includes(parsed.tag)) {
       throw new ProtocolError(`[${parsed.tag}] 是主導者專用標籤，agent 不能發`);
@@ -76,7 +78,7 @@ export function composeText({ command, tag, title = '', fields = {}, body = '' }
     if (command !== 'post' && parsed.tag !== tag) {
       throw new UserError(`${command} 只發 [${tag}]，內文開頭的 [${parsed.tag}] 不符；請拿掉標籤列，或改用 agentchat post`);
     }
-    return { tag: parsed.tag, text: body.trim() };
+    return { tag: parsed.tag, text: raw.trim() };
   }
   return { tag, text: buildMessage(tag, title, fields, body.trim()) };
 }
@@ -168,12 +170,14 @@ export async function sendParts(ctx, { name, role }, parts, files = []) {
 }
 
 // 發言類指令的完整流程（§6.1、§6.2）。
-// opts：command、tag、title、fields、body、files、requireBody、transform(text)、mutate(state, ids)。
+// opts：command、tag、title、fields、body、rawBody、files、requireBody、transform(text)、mutate(state, ids)。
 export async function publish(ctx, opts) {
   const room = ctx.room;
   const state = requireAgent(ctx);
   const body = opts.body ?? '';
-  if (opts.requireBody && !body) throw new UserError(`缺少內文：agentchat ${opts.command} --as ${state.name} <內文|->`);
+  if (opts.requireBody && !(opts.rawBody ?? body)) {
+    throw new UserError(`缺少內文：agentchat ${opts.command} --as ${state.name} <內文|->`);
+  }
 
   const composed = composeText({ ...opts, body });
   let text = composed.text;

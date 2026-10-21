@@ -39,7 +39,8 @@ async function retryAfterMs(res) {
   return Math.max(0, Math.ceil(seconds * 1000));
 }
 
-export function createClient(token, { apiBase } = {}) {
+// retryBaseMs：5xx 與網路錯誤的退避基準，第 n 次重試等 retryBaseMs × n。
+export function createClient(token, { apiBase, retryBaseMs = 1000 } = {}) {
   const base = String(apiBase || process.env.AGENTCHAT_API_BASE || DEFAULT_API_BASE).replace(/\/+$/, '');
 
   // label 是給錯誤訊息看的路徑；webhook 路徑含 token，絕不能原樣放進錯誤訊息。
@@ -59,7 +60,7 @@ export function createClient(token, { apiBase } = {}) {
         res = await fetch(base + route, { method, headers, body });
       } catch (e) {
         if (attempt < MAX_RETRIES) {
-          await sleep(1000 * (attempt + 1));
+          await sleep(retryBaseMs * (attempt + 1));
           continue;
         }
         throw new DiscordError(0, null, `無法連線到 Discord API（${new URL(base).host}）：${e.cause?.code || e.message}`);
@@ -74,7 +75,7 @@ export function createClient(token, { apiBase } = {}) {
       }
       if (res.status >= 500 && attempt < MAX_RETRIES) {
         await res.arrayBuffer().catch(() => null);
-        await sleep(1000 * (attempt + 1));
+        await sleep(retryBaseMs * (attempt + 1));
         continue;
       }
       const text = await res.text();

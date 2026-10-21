@@ -109,9 +109,10 @@ export function phaseOf(state) {
   return state.left ? 'left' : state.phase;
 }
 
+// wait 的第二行（§6.3 固定格式，分隔是全形空白）；status、join 也用同一行。
 export function summaryLine(state, room) {
   const r = roundInfo(state, room);
-  return `階段：${phaseOf(state)}｜角色：${state.role || '未指派'}｜討論輪數：${r.done}/${r.limit}`;
+  return `階段：${phaseOf(state)}　角色：${state.role || '未指派'}　討論：${r.done}/${r.limit}`;
 }
 
 // status 與重新連線時印的狀態摘要。
@@ -123,9 +124,10 @@ export function stateLines(state, room) {
   if (state.files?.length) lines.push(`可改檔案：${state.files.join(', ')}`);
   if (state.topic) {
     const f = state.topic.fields || {};
-    const repo = f.repo || room.defaultRepo;
-    const where = repo ? `repo=${repo}，base=${f.base || room.defaultBase}` : '純討論';
-    lines.push(`議題：「${state.topic.title || '(未命名)'}」（id=${state.topic.id}，${where}）`);
+    const repo = f.repo || (room.defaultRepo ? `${room.defaultRepo}（房間預設）` : '未指定（有 branch 分工時用目前目錄）');
+    const rounds = f.rounds || `${room.maxDiscussionRounds}（房間預設）`;
+    lines.push(`議題：「${state.topic.title || '(未命名)'}」（id=${state.topic.id}）`);
+    lines.push(`議題欄位：repo：${repo}　base：${f.base || room.defaultBase}　rounds：${rounds}`);
   } else {
     lines.push('議題：無');
   }

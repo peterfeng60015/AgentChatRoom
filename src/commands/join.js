@@ -1,7 +1,7 @@
 import { snowflakeNow } from '../discord.js';
 import { ProtocolError, UserError } from '../errors.js';
 import { applyDirectives, buildMessage, isTargeted, reminders, splitAgentName } from '../protocol.js';
-import { renderMessage, section } from '../render.js';
+import { fmtTime, renderMessage, section } from '../render.js';
 import { appendLog, loadAgent, newAgent, recordOwnMessages, saveAgent } from '../state.js';
 import {
   agentName,
@@ -16,16 +16,19 @@ import {
 import { sendParts } from '../publish.js';
 
 export const summary = '進房：建立本機狀態、套用進行中的議題與指派，發 [JOIN]';
-export const usage = 'agentchat join --as <名稱> --vendor <claude|gemini|codex|other> [--model <文字>] [--host <標籤>] [--force]';
+export const usage =
+  'agentchat join --as <名稱> --vendor <claude|gemini|codex|other> [--model <文字>] [--host <標籤>] [--resume] [--force]';
 export const options = {
   vendor: { type: 'string' },
   model: { type: 'string' },
   host: { type: 'string' },
+  resume: { type: 'boolean', default: false },
   force: { type: 'boolean', default: false },
 };
 export const details = [
   '名稱：英數字、底線、連字號，英數字開頭，1 到 31 字元，慣例是 <vendor>-<編號>，例如 claude-1。',
-  '本機已有狀態檔（且沒 leave）時視為重新連線：保留角色、階段與游標，不重發 [JOIN]。',
+  '本機已有這個名稱的狀態檔（且沒 leave）時拒絕：新開的 session 請換名稱；要接手這個身分（例如對話被壓縮後）加 --resume，保留角色、階段與游標，不重發 [JOIN]。',
+  '--force：捨棄本機舊狀態重新進房；也會略過下面的名稱衝突檢查。',
   '名稱在 24 小時內被別人用過（最後一則不是 [LEAVE] 或 [IDLE]）會拒絕，換名稱或加 --force。',
 ];
 
@@ -33,8 +36,10 @@ const VENDORS = ['claude', 'gemini', 'codex', 'other'];
 const RECENT_LIMIT = 200;
 const CONFLICT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+// model、host 是自由文字，壓成一行並限制長度，免得 [JOIN] 超過 Discord 的 2000 字。
 function oneLine(value) {
-  return value === undefined ? undefined : String(value).replace(/\s+/g, ' ').trim();
+  if (value === undefined) return undefined;
+  return [...String(value).replace(/\s+/g, ' ').trim()].slice(0, 100).join('');
 }
 
 // 頻道最近 200 則，由舊到新。
@@ -76,11 +81,19 @@ export async function run(ctx) {
   if (!vendor || !VENDORS.includes(vendor)) {
     throw new UserError(`--vendor 必須是 ${VENDORS.join('、')} 其中之一`);
   }
+  if (ctx.values.resume && ctx.values.force) throw new UserError('--resume 與 --force 只能擇一');
   const room = ctx.room;
   const client = ctx.client;
   const existing = loadAgent(room.channelId, name);
 
-  if (existing && !existing.left) {
+  // 本機已有這個名稱、還沒 leave：可能是本機另一個 session 正在用，預設拒絕；--resume 接手，--force 捨棄重來。
+  if (existing && !existing.left && !ctx.values.force) {
+    if (!ctx.values.resume) {
+      const last = existing.lastActivityAt ? fmtTime(existing.lastActivityAt) : '不明';
+      throw new ProtocolError(
+        `這個名稱在本機使用中：${name}（最後活動時間 ${last}，階段 ${existing.phase}）。新開的 session 請換名稱；確定要接手這個身分才加 --resume`,
+      );
+    }
     let unread = null;
     let unreadError = null;
     try {
@@ -90,7 +103,8 @@ export async function run(ctx) {
     }
     const rem = reminders(existing, room);
     const text = [
-      `重新連線：${name} 已在房間 ${room.roomName}（頻道 ${room.channelId}），保留原本的狀態，沒有重發 [JOIN]。`,
+      `重新連線：接手既有身分 ${name}，沒有發 [JOIN]`,
+      `房間：${room.roomName}（頻道 ${room.channelId}）`,
       ...stateLines(existing, room),
     ];
     const u = unreadLine(unread ?? 0);
@@ -108,7 +122,7 @@ export async function run(ctx) {
   const raws = await fetchRecent(client, room.channelId);
   const now = Date.now();
 
-  // 只有本機沒有這個名稱的狀態檔時才檢查衝突；有狀態檔（已 leave）代表是自己重新進房。
+  // 只有本機沒有這個名稱的狀態檔時才檢查衝突；有狀態檔（已 leave 或 --force）代表是自己重新進房。
   if (!existing && !ctx.values.force) {
     const clash = findConflict(raws, room, name, webhook.id, now);
     if (clash) {
@@ -158,8 +172,8 @@ export async function run(ctx) {
     ...stateLines(state, room),
   ];
   if (active) {
-    text.push('', '進行中的議題：', renderMessage(active.topic));
-    if (assigns.length) text.push('', '對你生效的 [ASSIGN]：', ...assigns.map(renderMessage));
+    text.push('', '進行中的議題：', renderMessage(active.topic, { as: name }));
+    if (assigns.length) text.push('', '對你生效的 [ASSIGN]：', ...assigns.map((m) => renderMessage(m, { as: name })));
   }
   const n = section('注意', notes);
   if (n) text.push(n);

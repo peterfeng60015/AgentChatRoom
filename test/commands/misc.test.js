@@ -148,7 +148,7 @@ describe('doctor', () => {
     assert.equal(r.code, 0, r.stdout);
     assert.match(r.stdout, /\[OK\] webhook：本機快取有效/);
     assert.match(r.stdout, /\[OK\] 測試訊息：已送出/);
-    assert.match(r.stdout, /\[OK\] agent 狀態：claude-1：階段：lobby/);
+    assert.match(r.stdout, /\[OK\] agent 狀態：claude-1：階段：lobby　角色：未指派　討論：0\/3/);
     assert.equal(env.mock.lastMessage().content, '[INFO] doctor 測試');
 
     r = await env.run(['doctor', '--as', 'claude-2']);
@@ -255,9 +255,9 @@ describe('status、read、download、Discord 錯誤', () => {
     env.mock.addMessage({ content: '新訊息' });
     const r = await env.run(['status', '--as', 'claude-1']);
     assert.equal(r.code, 0, r.stderr);
-    assert.match(r.stdout, /階段：discussion｜角色：前端｜討論輪數：1\/3/);
+    assert.match(r.stdout, /階段：discussion　角色：前端　討論：1\/3/);
     assert.match(r.stdout, /分工：登入頁/);
-    assert.match(r.stdout, /議題：「登入」（id=7，repo=\/tmp\/app，base=main）/);
+    assert.match(r.stdout, /議題：「登入」（id=7）\n議題欄位：repo：\/tmp\/app　base：main　rounds：3（房間預設）/);
     assert.match(r.stdout, /待答問題：id=42/);
     assert.match(r.stdout, /未讀：1 則/);
     const out = (await env.run(['status', '--as', 'claude-1', '--json'])).json();

@@ -81,6 +81,7 @@ export function newAgent({ name, vendor = null, model = null, channelId, cursor 
     branch: null,
     isolation: null,
     files: null,
+    assigned: false,
     topic: null,
     phase: 'lobby',
     cursor,

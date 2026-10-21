@@ -25,7 +25,7 @@ describe('wait', () => {
     assert.ok(Date.now() - t0 < 1500);
     const lines = r.stdout.split('\n');
     assert.equal(lines[0], '狀態：逾時，沒有新訊息');
-    assert.equal(lines[1], '階段：lobby｜角色：未指派｜討論輪數：0/3');
+    assert.equal(lines[1], '階段：lobby　角色：未指派　討論：0/3');
     const polls = env.mock.requests.filter((q) => q.path.endsWith('/messages') && q.query.includes('after='));
     assert.equal(polls.length, 1);
   });
@@ -154,8 +154,8 @@ describe('wait', () => {
   });
 
   test('套用指令：CONTINUE n、STOP、stopped 之後 GO 照常轉換、CLOSE', async () => {
-    env.patchState('claude-1', { phase: 'discussion', discussRound: 3, role: '前端' });
-    env.mock.addMessage({ content: '[CONTINUE] @claude-1 2' });
+    env.patchState('claude-1', { phase: 'discussion', discussRound: 3, role: '前端', assigned: true });
+    env.mock.addMessage({ content: '[CONTINUE] 2 @claude-1' });
     await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
     let s = env.readState('claude-1');
     assert.equal(s.discussLimit, 2);
@@ -193,6 +193,112 @@ describe('wait', () => {
     out = (await env.run(['wait', '--as', 'claude-1', '--timeout', '0', '--until', 'mention', '--json'])).json();
     assert.equal(out.status, 'matched');
     assert.match(out.notes.join('\n'), /\[ANSWER\]/);
+    assert.equal(env.readState('claude-1').pendingQuestionId, null);
+  });
+
+  test('mention 規則：中文緊接的 @名稱算、email 不算、@角色要有邊界、角色的空白換成 -', async () => {
+    const until = async () =>
+      (await env.run(['wait', '--as', 'claude-1', '--timeout', '0', '--until', 'mention', '--json'])).json().status;
+    agentSays('gemini-1', '請@claude-1看一下');
+    assert.equal(await until(), 'matched');
+    agentSays('gemini-1', '寄信到 me@claude-1.dev');
+    assert.equal(await until(), 'timeout');
+
+    env.mock.addMessage({ content: '[TOPIC] t' });
+    env.mock.addMessage({ content: '[ASSIGN] @claude-1\nrole: QA Lead' });
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    assert.equal(env.readState('claude-1').role, 'QA-Lead');
+    assert.equal(env.mock.executions.length, 1);
+    await env.run(['post', '--as', 'claude-1', 'hi']);
+    assert.equal(env.mock.executions.at(-1).payload.username, 'claude-1 (QA-Lead)');
+
+    agentSays('gemini-1', '@qa-lead請看');
+    assert.equal(await until(), 'matched');
+    env.patchState('claude-1', { role: '前端' });
+    agentSays('gemini-1', '@前端請看');
+    assert.equal(await until(), 'timeout', '@前端請看 的 token 是「前端請看」');
+    agentSays('gemini-1', '@前端，請看');
+    assert.equal(await until(), 'matched');
+  });
+
+  test('沒有 @ 的 [GO]、[CONTINUE] 只對已被指派且在 discussion／stopped 的 agent 生效；沒有 @ 的 [STOP] 對一般階段都生效', async () => {
+    env.mock.addMessage({ content: '[TOPIC] t' });
+    env.mock.addMessage({ content: '[GO]' });
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    let s = env.readState('claude-1');
+    assert.equal(s.phase, 'topic', '還沒被指派，不受沒 @ 的 GO 影響');
+    assert.equal(s.assigned, false);
+
+    env.mock.addMessage({ content: '[CONTINUE]' });
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    assert.equal(env.readState('claude-1').phase, 'topic');
+
+    env.mock.addMessage({ content: '[STOP]' });
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    assert.equal(env.readState('claude-1').phase, 'stopped', '沒 @ 的 STOP 對 topic 階段也生效');
+
+    env.mock.addMessage({ content: '[ASSIGN] @claude-1\nrole: 前端' });
+    env.mock.addMessage({ content: '[GO]' });
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    s = env.readState('claude-1');
+    assert.equal(s.assigned, true);
+    assert.equal(s.phase, 'work');
+
+    env.mock.addMessage({ content: '[CONTINUE]' });
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    assert.equal(env.readState('claude-1').phase, 'work', 'work 階段不受沒 @ 的 CONTINUE 影響');
+    env.mock.addMessage({ content: '[CONTINUE] @claude-1' });
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    assert.equal(env.readState('claude-1').phase, 'discussion', '有 @ 時不看階段');
+
+    env.patchState('claude-1', { phase: 'closed' });
+    env.mock.addMessage({ content: '[STOP]' });
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    assert.equal(env.readState('claude-1').phase, 'closed', 'closed 不受沒 @ 的 STOP 影響');
+  });
+
+  test('[TOPIC] 清除分工、待答問題與 assigned；注意列出作業 repo 來源，不說「純討論」', async () => {
+    env.patchState('claude-1', {
+      phase: 'work', role: '前端', task: 't', branch: 'b', isolation: 'worktree', files: ['a'],
+      assigned: true, pendingQuestionId: '42', discussRound: 2, discussLimit: 5,
+      lastProgressAt: new Date().toISOString(), workStartedAt: new Date().toISOString(),
+    });
+    env.mock.addMessage({ content: '[TOPIC] 第二題' });
+    const out = (await env.run(['wait', '--as', 'claude-1', '--timeout', '0', '--json'])).json();
+    const s = env.readState('claude-1');
+    for (const key of ['role', 'task', 'branch', 'isolation', 'files', 'pendingQuestionId', 'lastProgressAt', 'workStartedAt', 'discussLimit']) {
+      assert.equal(s[key], null, key);
+    }
+    assert.equal(s.assigned, false);
+    assert.equal(s.discussRound, 0);
+    assert.equal(s.phase, 'topic');
+    const note = out.notes.join('\n');
+    assert.match(note, /作業 repo：未指定，有 branch 分工時用目前目錄/);
+    assert.ok(!note.includes('純討論'));
+
+    env.mock.addMessage({ content: '[TOPIC] 第三題\nrepo：/tmp/app\nbase:dev' });
+    const again = (await env.run(['wait', '--as', 'claude-1', '--timeout', '0', '--json'])).json();
+    assert.match(again.notes.join('\n'), /作業 repo：\/tmp\/app（\[TOPIC\] 指定）；基準分支：dev/);
+  });
+
+  test('待答問題：主導者不加標籤 @ 我的名稱會清除；@角色、@all 不會；回覆已掉出最近 50 則的問題也認得', async () => {
+    env.patchState('claude-1', { role: '前端' });
+    await env.run(['ask', '--as', 'claude-1', '問題']);
+    const q = env.mock.lastMessage();
+    env.mock.addMessage({ content: '@前端 等一下' });
+    env.mock.addMessage({ content: '@all 先休息' });
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    assert.equal(env.readState('claude-1').pendingQuestionId, q.id);
+
+    env.patchState('claude-1', { ownMessageIds: [] });
+    env.mock.addMessage({ content: '回覆舊問題', replyTo: q.id });
+    const out = (await env.run(['wait', '--as', 'claude-1', '--timeout', '0', '--until', 'mention', '--json'])).json();
+    assert.equal(out.status, 'matched');
+    assert.equal(env.readState('claude-1').pendingQuestionId, null);
+
+    await env.run(['ask', '--as', 'claude-1', '問題二']);
+    env.mock.addMessage({ content: '@claude-1 用 A' });
+    await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
     assert.equal(env.readState('claude-1').pendingQuestionId, null);
   });
 
@@ -245,7 +351,9 @@ describe('wait', () => {
   test('附檔只顯示檔名與大小，提示用 download', async () => {
     env.mock.addMessage({ content: '看圖', attachments: [{ filename: 'a.png', data: Buffer.alloc(2048), content_type: 'image/png' }] });
     const r = await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
-    assert.match(r.stdout, /附檔：a\.png（2 KB）→ agentchat download \d+/);
+    assert.match(r.stdout, /附檔：a\.png（2 KB）→ agentchat download --as claude-1 \d+/);
+    const anon = await env.run(['read', '--last', '1']);
+    assert.match(anon.stdout, /→ agentchat download --as <你的名稱> \d+/);
     const out = (await env.run(['read', '--as', 'claude-1', '--last', '1', '--json'])).json();
     assert.equal(out.messages[0].attachments[0].url, undefined, 'JSON 不帶會過期的連結');
   });
