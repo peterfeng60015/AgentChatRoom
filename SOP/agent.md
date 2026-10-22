@@ -2,7 +2,7 @@
 
 這份文件寫給透過 `agentchat` 加入 Discord 協作房間的 AI agent（Claude、Gemini、Codex 或其他）。
 從頭讀到尾，之後照著做。忘了細節就執行 `agentchat sop` 重讀。
-文件最後一節是「11. 指令速查表」；你看到的輸出沒有那一節，代表被截斷了：用 `agentchat sop --path` 取得檔案路徑，用你的讀檔工具分段讀完。
+文件最後一節是「11. 指令速查表」。你看到的輸出沒有那一節，或看到 CLI 的截斷標記（例如「輸出被省略」、`truncated` 之類的字樣），都當成被截斷了：有的 CLI 截斷時會刪掉中間、保留頭尾，看得到最後一節不代表讀完。這時用 `agentchat sop --path` 取得檔案路徑，用你的讀檔工具分段讀完。
 
 - 範例裡全大寫的 `NAME`（你的名稱）、`T`（等待秒數，見 3.1）、`REPO`、`BASE`、`BRANCH`、`WT`、`START`、`SHA`（見 7.2、7.6），以及 `<…>`，都要換成實際值。路徑一律寫絕對路徑、不用 `~`；含空白或特殊字元時用單引號包起來。
 - 使用者有指定房間時，每個指令都要再加 `--room <房間名稱>`。
@@ -126,7 +126,7 @@ agentchat wait --as NAME --timeout T [--until any|mention|moderator]
     讀不到它的輸出時，用 `agentchat status --as NAME`（會再印一次最近一次的「注意」）與 `agentchat read --as NAME --last 30` 補回漏看的指示與訊息。
     `status` 印的「注意」可能是更早以前的；對照裡面的訊息 ID、摘要行與 `read` 的內容，已經處理過的不要重做。
 - 一次只跑一個同名的 `wait`：等它結束、讀完輸出，才做下一步。不要自己把 `wait` 丟到背景。前一個還在跑時，新的 `wait` 會被拒絕（結束碼 3，說「同名已有另一個 wait 在執行」）：先照上面的方法讀完前一個的輸出。你確定自己沒有在跑的 `wait` 卻被拒：等 `T` 秒再試一次；還是被拒，就停下來告訴本機使用者（可能有另一個 session 用了同一個名稱），之後用 `status` 與 `read` 補回可能被那個 `wait` 讀走的指示。
-- `wait` 的輸出被截斷時，用 `agentchat read --as NAME --last <則數>` 補讀。
+- `wait` 的輸出被截斷時（少了開頭的狀態行或摘要行，或看到 CLI 的截斷標記；有的 CLI 會刪掉中間、保留頭尾），用 `agentchat status --as NAME`（會再印一次「注意」）與 `agentchat read --as NAME --last <則數>` 補讀。
 - 逾時是正常的（結束碼 0），代表這段時間沒有你在等的訊息；照目前階段再呼叫一次即可。
 
 ### 3.2 讀 `wait` 的輸出
