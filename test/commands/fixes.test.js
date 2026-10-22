@@ -344,7 +344,7 @@ describe('CLI 與指令層的修正', () => {
     assert.equal((await post(path.join(home, '.aws', 'credentials'))).code, 2);
     const r = await env.run(['post', '--as', 'claude-1', '--body-file', '/dev/null']);
     assert.equal(r.code, 2);
-    assert.match(r.stderr, /\/dev/);
+    assert.match(r.stderr, /在 \/dev 裡/);
   });
 
   test('token 含換行 → 結束碼 2，不印出 token、不送任何請求', async () => {
@@ -605,7 +605,7 @@ try { const rel = acquireWaitLock(${JSON.stringify(env.room.channelId)}, 'claude
     fs.copyFileSync(path.join(env.home, 'config', 'room.json'), path.join(env.home, 'config', 'rooms', 'r2.json'));
     env.mock.addMessage({ content: '[TOPIC] 有附檔', attachments: [{ filename: 'spec.md', data: 'x' }] });
     const j = await env.run(['join', '--as', 'claude-1', '--vendor', 'claude', '--room', 'r2']);
-    assert.match(j.stdout, /附檔：spec\.md（1 B）→ agentchat download --as claude-1 --room r2 \d+/);
+    assert.match(j.stdout, /^附檔：spec\.md（1 B）→ agentchat download --as claude-1 --room r2 \d+/m);
     assert.match(j.stdout, /\n提醒\n/);
     assert.ok(!j.stdout.includes('下一步'));
     const st = await env.run(['status', '--as', 'claude-1', '--room', 'r2']);
@@ -625,6 +625,10 @@ try { const rel = acquireWaitLock(${JSON.stringify(env.room.channelId)}, 'claude
     assert.match(r.stdout, /附檔：a\ufffdgpj\.exe/);
     const json = (await env.run(['read', '--as', 'claude-1', '--json'])).stdout;
     assert.ok(!/[\u202e\u009b]/.test(json));
+    // 下載時檔名裡的雙向文字字元換成 _，存檔的名字看得出真正的副檔名。
+    const withFile = env.mock.lastMessage();
+    const d = (await env.run(['download', '--as', 'claude-1', withFile.id, '--json'])).json();
+    assert.equal(path.basename(d.files[0].path), 'a_gpj.exe');
   });
 
   test('自動 [IDLE] 送出失敗：不丟錯、照常輸出、狀態維持逾時、階段不改、注意多一行', async () => {
