@@ -40,12 +40,12 @@ async function checkChannel(client, room) {
     ch = await client.channel(room.channelId);
   } catch (e) {
     if (e instanceof DiscordError && (e.status === 404 || e.status === 403)) {
-      throw new UserError(`讀不到頻道 ${room.channelId}：請檢查 room.json 的 channelId 與 bot 的頻道權限（${doctorText(room)} 可以逐項檢查）`);
+      throw new UserError(`讀不到頻道 ${room.channelId}：請檢查 ${room.file} 的 channelId 與 bot 的頻道權限（${doctorText(room)} 可以逐項檢查）`);
     }
     throw e;
   }
   if (ch.guild_id !== room.guildId) {
-    throw new UserError(`頻道 ${room.channelId} 不屬於 room.guildId ${room.guildId}：請檢查 room.json（${doctorText(room)} 可以逐項檢查）`);
+    throw new UserError(`頻道 ${room.channelId} 不屬於 room.guildId ${room.guildId}：請檢查 ${room.file}（${doctorText(room)} 可以逐項檢查）`);
   }
   if (THREAD_TYPES.has(ch.type)) throw new UserError(`頻道 ${room.channelId} 是討論串，尚未支援討論串：room.json 的 channelId 請填一般文字頻道`);
 }
