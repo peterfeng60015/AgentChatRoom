@@ -312,8 +312,33 @@ export function avatarUrl(room, { name, vendor }) {
   const template = room.avatarUrlTemplate;
   if (!template) return null;
   const v = vendor && Object.hasOwn(room.avatarStyles, vendor) ? vendor : 'other';
-  const values = { name, vendor: vendor || 'other', style: room.avatarStyles[v] ?? '' };
+  // 名稱不分大小寫（§6.1），seed 用小寫，Claude-1 與 claude-1 同圖。
+  const values = { name: String(name).toLowerCase(), vendor: vendor || 'other', style: room.avatarStyles[v] ?? '' };
   return template.replace(/\{(name|vendor|style)\}/g, (_, key) => encodeURIComponent(values[key]));
+}
+
+// §6.2：訊息已經送出之後才做的「更新狀態、寫本機紀錄」。更新狀態失敗（例如途中被主導者 clear）時丟 UserError（結束碼 2），
+// 訊息開頭寫明已送出，免得 agent 重發；寫紀錄失敗不蓋掉這個錯誤，只附在後面。label 是「訊息」或「自動 [IDLE] 」。
+export function afterSent(label, ids, update, logEntry) {
+  let stateError = null;
+  let result;
+  try {
+    result = update();
+  } catch (e) {
+    stateError = e;
+  }
+  let logError = null;
+  try {
+    appendLog(logEntry.channelId, logEntry.entry);
+  } catch (e) {
+    logError = e;
+  }
+  if (stateError) {
+    const tail = logError ? `；本機紀錄也寫入失敗：${logError.message}` : '';
+    throw new UserError(`${label}已送出（訊息 ID：${ids.join(', ')}），不要重發；但更新本機狀態失敗：${stateError.message}${tail}`);
+  }
+  if (logError) throw logError;
+  return result;
 }
 
 // 依序送出各段，附檔放在最後一則。回傳已送出的訊息 ID；中途失敗時 error.sentIds 帶著已送出的部分。
@@ -389,26 +414,42 @@ export async function publish(ctx, opts) {
   } catch (e) {
     if (e.sentIds?.length) {
       // 帶標籤列的第一段已經送出，這則發言算數：照樣更新狀態（ask 記待答問題、done 改階段；discuss 的輪數已預扣）。
-      updateAgent(room.channelId, state.name, (s) => {
-        recordOwnMessages(s, e.sentIds);
-        opts.mutate?.(s, e.sentIds);
-      });
-      // 告訴 agent 哪幾段已經送出，免得整則重送造成重複。
-      e.message += `（已送出 ${e.sentIds.length}/${plan.parts.length} 段：${e.sentIds.join(', ')}；請只補送剩下的部分）`;
+      let stateError = null;
+      try {
+        updateAgent(room.channelId, state.name, (s) => {
+          recordOwnMessages(s, e.sentIds);
+          opts.mutate?.(s, e.sentIds);
+        });
+      } catch (err) {
+        stateError = err.message;
+      }
+      // 告訴 agent 哪幾段已經送出，免得整則重送造成重複；狀態也沒更新（例如被 clear）時不叫它補送。
+      e.message += stateError
+        ? `（已送出 ${e.sentIds.length}/${plan.parts.length} 段：${e.sentIds.join(', ')}；更新本機狀態也失敗：${stateError}；不要補送，先停下來告訴使用者）`
+        : `（已送出 ${e.sentIds.length}/${plan.parts.length} 段：${e.sentIds.join(', ')}；請只補送剩下的部分）`;
     } else if (tag === 'DISCUSS') {
-      // 一段都沒送出：退回預扣的那一輪。
-      updateAgent(room.channelId, state.name, (s) => {
-        s.discussRound = Math.max(0, (s.discussRound ?? 0) - 1);
-      });
+      // 一段都沒送出：退回預扣的那一輪。狀態已被清掉（例如途中被 clear）時沒有輪數可退，保留原本的錯誤。
+      try {
+        updateAgent(room.channelId, state.name, (s) => {
+          s.discussRound = Math.max(0, (s.discussRound ?? 0) - 1);
+        });
+      } catch (err) {
+        e.message += `；更新本機狀態也失敗：${err.message}`;
+      }
     }
     throw e;
   }
 
-  const updated = updateAgent(room.channelId, state.name, (s) => {
-    recordOwnMessages(s, ids);
-    opts.mutate?.(s, ids);
-  });
-  appendLog(room.channelId, { dir: 'out', agent: state.name, tag, ids, content: resolved });
+  const updated = afterSent(
+    '訊息',
+    ids,
+    () =>
+      updateAgent(room.channelId, state.name, (s) => {
+        recordOwnMessages(s, ids);
+        opts.mutate?.(s, ids);
+      }),
+    { channelId: room.channelId, entry: { dir: 'out', agent: state.name, tag, ids, content: resolved } },
+  );
 
   let unread = null;
   let unreadError = null;

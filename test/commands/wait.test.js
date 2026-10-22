@@ -1,5 +1,7 @@
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { setup } from './helpers.js';
 
 describe('wait', () => {
@@ -481,6 +483,23 @@ describe('wait', () => {
     const text = await env.run(['wait', '--as', 'claude-1', '--timeout', '1']);
     assert.match(text.stdout, /^狀態：逾時，沒有新訊息/, '已經 idle 就不重發');
     assert.equal(env.mock.messages.filter((m) => m.content.startsWith('[IDLE]')).length, 1);
+  });
+
+  test('自動 [IDLE] 送出途中被 clear：寫明 [IDLE] 已送出、不要重發（結束碼 2），本機紀錄照寫', async () => {
+    env.patchState('claude-1', { emptyWaitSince: new Date(Date.now() - 2 * 3600 * 1000).toISOString() });
+    env.mock.delay({ method: 'POST', path: /^\/webhooks\//, ms: 3000 });
+    const executes = () => env.mock.requests.filter((q) => q.method === 'POST' && q.path.includes('/webhooks/')).length;
+    const before = executes();
+    const waiting = env.run(['wait', '--as', 'claude-1', '--timeout', '1']);
+    for (let i = 0; i < 200 && executes() === before; i++) await new Promise((res) => setTimeout(res, 20));
+    assert.equal((await env.run(['clear', '--yes'])).code, 0);
+    const r = await waiting;
+    assert.equal(r.code, 2, r.stdout + r.stderr);
+    assert.match(r.stderr, /^agentchat: 自動 \[IDLE\] 已送出（訊息 ID：\d+），不要重發；但更新本機狀態失敗：claude-1 的本機狀態已被主導者用 agentchat clear 清除/);
+    const sent = env.mock.lastMessage();
+    assert.match(sent.content, /^\[IDLE\] claude-1/);
+    const log = fs.readFileSync(path.join(env.stateDir, 'logs', `${env.mock.config.channelId}.jsonl`), 'utf8');
+    assert.ok(log.includes(sent.id), '本機紀錄照寫');
   });
 
   test('無人回應但有別人一般發言：計時被重設，不發 [IDLE]（即使不符合 --until 條件）', async () => {

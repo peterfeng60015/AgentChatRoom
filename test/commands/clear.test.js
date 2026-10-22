@@ -47,7 +47,8 @@ describe('clear', () => {
     assert.match(r.stdout, /^已清空 #agent-room：刪除 103 則（其中逐則刪除 3 則），略過 0 則（已不存在），失敗 0 則/);
     assert.match(r.stdout, /已清除本機 2 個 agent 的狀態檔與 wait 鎖（claude-1、gemini-1）/);
     assert.match(r.stdout, /webhook 快取保留/);
-    assert.ok(!fs.existsSync(agentsDir), 'agents/<頻道ID>/ 整個清掉（含 wait 鎖）');
+    // agents/<頻道ID>/ 整個清掉（含 wait 鎖），只剩清除標記。
+    assert.deepEqual(fs.readdirSync(agentsDir).sort(), ['claude-1.cleared', 'gemini-1.cleared']);
     assert.ok(fs.existsSync(webhookCache), 'webhook 快取保留');
 
     // 清完可以用同一個名稱重新進房（不是「本機使用中」）。
@@ -191,7 +192,9 @@ describe('clear', () => {
     await env.join('claude-1');
     const r = await env.run(['clear'], { input: 'agent-room\n' });
     assert.equal(r.code, 2);
-    assert.match(r.stderr, /要在終端機輸入頻道名稱確認；非互動環境請加 --yes/);
+    // 不教 agent 加 --yes：只說這是主導者專用、agent 不可以執行。
+    assert.match(r.stderr, /clear 是主導者專用指令，agent 不可以執行；主導者請在自己的終端機執行（會要求輸入頻道名稱確認），或在自己的腳本裡加 --yes/);
+    assert.doesNotMatch(r.stderr, /非互動環境請加 --yes/);
     assert.equal(deleteRequests(env.mock).length, 0);
     assert.ok(fs.existsSync(env.agentFile('claude-1')));
     const j = await env.run(['clear', '--json']);
@@ -262,6 +265,147 @@ describe('clear', () => {
     assert.match(r.stdout, /^  clear /m);
     const one = await env.run(['help', 'clear']);
     assert.match(one.stdout, /^用法：agentchat clear \[--yes\]/);
+    assert.match(one.stdout, /這是主導者專用指令，agent 不可以執行（也不接受 --as）。.*主導者自己的腳本裡才加 --yes 跳過確認/);
+    assert.doesNotMatch(one.stdout, /非終端機環境一定要帶/);
+    assert.match(one.stdout, /logs\/、downloads\/ 仍留有被刪訊息的內容，要徹底清除請手動刪除/);
+  });
+
+  describe('清除標記：還在跑的 agent 不會被提示重新 join', () => {
+    const CLEARED = /agentchat: claude-1 的本機狀態已被主導者用 agentchat clear 清除：先停下來告訴使用者，不要自己重新 join/;
+
+    test('被清掉的 agent 下一個指令收到 clear 訊息（結束碼 2）；沒進過房的照舊提示 join；重新 join 後恢復正常', async () => {
+      await env.join('Claude-1');
+      let r = await env.run(['clear', '--yes']);
+      assert.equal(r.code, 0, r.stderr);
+      const marker = path.join(env.stateDir, 'agents', env.mock.config.channelId, 'claude-1.cleared');
+      assert.equal(JSON.parse(fs.readFileSync(marker, 'utf8')).name, 'Claude-1');
+      assert.ok(!fs.existsSync(env.agentFile('claude-1')));
+
+      for (const args of [['post', '--as', 'claude-1', 'hi'], ['wait', '--as', 'CLAUDE-1', '--timeout', '0'], ['status', '--as', 'claude-1']]) {
+        r = await env.run(args);
+        assert.equal(r.code, 2, args.join(' '));
+        assert.match(r.stderr.replace(/CLAUDE-1/, 'claude-1'), CLEARED, args.join(' '));
+        assert.doesNotMatch(r.stderr, /先執行 agentchat join/);
+      }
+      r = await env.run(['post', '--as', 'gemini-9', 'hi']);
+      assert.equal(r.code, 2);
+      assert.match(r.stderr, /gemini-9 還沒進房：先執行 agentchat join --as gemini-9/);
+
+      await env.join('claude-1');
+      assert.ok(!fs.existsSync(marker), 'join 後刪掉標記');
+      r = await env.run(['post', '--as', 'claude-1', 'back']);
+      assert.equal(r.code, 0, r.stderr);
+    });
+
+    test('clear 後 join --resume：回 clear 訊息（結束碼 3），不叫它不帶 --resume 重新進房；--json 帶 markError', async () => {
+      await env.join('claude-1');
+      const c = await env.run(['clear', '--yes', '--json']);
+      assert.equal(c.json().markError, null);
+      const r = await env.run(['join', '--as', 'claude-1', '--vendor', 'claude', '--resume']);
+      assert.equal(r.code, 3);
+      assert.match(r.stderr, CLEARED);
+      assert.doesNotMatch(r.stderr, /請不帶 --resume 進房/);
+      const other = await env.run(['join', '--as', 'gemini-1', '--vendor', 'gemini', '--resume']);
+      assert.match(other.stderr, /沒有可接手的身分，請不帶 --resume 進房/);
+    });
+
+    test('發言途中被 clear、本機紀錄又寫不進去：仍寫明訊息已送出（結束碼 2），附上紀錄失敗', async () => {
+      await env.join('claude-1');
+      const log = path.join(env.stateDir, 'logs', `${env.mock.config.channelId}.jsonl`);
+      fs.rmSync(log);
+      fs.mkdirSync(log); // 寫入會失敗（EISDIR）
+      env.mock.delay({ method: 'POST', path: /^\/webhooks\//, ms: 3000 });
+      const executes = () => env.mock.requests.filter((q) => q.method === 'POST' && q.path.includes('/webhooks/')).length;
+      const before = executes();
+      const posting = env.run(['post', '--as', 'claude-1', 'racing']);
+      for (let i = 0; i < 100 && executes() === before; i++) await new Promise((res) => setTimeout(res, 20));
+      assert.equal((await env.run(['clear', '--yes'])).code, 0);
+      const r = await posting;
+      assert.equal(r.code, 2, r.stderr);
+      assert.match(r.stderr, /^agentchat: 訊息已送出（訊息 ID：\d+），不要重發；但更新本機狀態失敗：.*已被主導者用 agentchat clear 清除.*；本機紀錄也寫入失敗：/);
+    });
+
+    test('再 clear 一次：之前清過、還沒重新 join 的 agent 標記保留', async () => {
+      await env.join('claude-1');
+      await env.run(['clear', '--yes']);
+      await env.join('gemini-1');
+      const r = await env.run(['clear', '--yes']);
+      assert.equal(r.code, 0, r.stderr);
+      assert.match(r.stdout, /已清除本機 1 個 agent 的狀態檔與 wait 鎖（gemini-1）/);
+      for (const name of ['claude-1', 'gemini-1']) {
+        const p = await env.run(['post', '--as', name, 'hi']);
+        assert.match(p.stderr, new RegExp(`${name} 的本機狀態已被主導者用 agentchat clear 清除`));
+      }
+    });
+
+    test('發言途中被 clear：訊息已送出、寫明不要重發（結束碼 2），本機紀錄照寫', async () => {
+      await env.join('claude-1');
+      env.mock.delay({ method: 'POST', path: /^\/webhooks\//, ms: 3000 });
+      const executes = () => env.mock.requests.filter((q) => q.method === 'POST' && q.path.includes('/webhooks/')).length;
+      const before = executes();
+      const posting = env.run(['post', '--as', 'claude-1', 'racing']);
+      // 等 post 卡在送出那一步再 clear。
+      for (let i = 0; i < 100 && executes() === before; i++) {
+        await new Promise((res) => setTimeout(res, 20));
+      }
+      const c = await env.run(['clear', '--yes']);
+      assert.equal(c.code, 0, c.stderr);
+      const r = await posting;
+      assert.equal(r.code, 2, r.stderr);
+      assert.match(r.stderr, /^agentchat: 訊息已送出（訊息 ID：\d+），不要重發；但更新本機狀態失敗：claude-1 的本機狀態已被主導者用 agentchat clear 清除/);
+      const sent = env.mock.lastMessage();
+      assert.match(sent.content, /racing/);
+      assert.ok(r.stderr.includes(sent.id));
+      const log = fs.readFileSync(path.join(env.stateDir, 'logs', `${env.mock.config.channelId}.jsonl`), 'utf8');
+      assert.ok(log.includes(sent.id), '本機紀錄照寫');
+    });
+
+    test('discuss 一段都沒送出、途中又被 clear：保留原本的錯誤（結束碼 1），另外說明狀態也更新失敗', async () => {
+      await env.join('claude-1');
+      env.patchState('claude-1', { phase: 'discussion' });
+      env.mock.delay({ method: 'POST', path: /^\/webhooks\//, ms: 3000 });
+      env.mock.fail({ method: 'POST', path: /^\/webhooks\//, status: 500 });
+      const executes = () => env.mock.requests.filter((q) => q.method === 'POST' && q.path.includes('/webhooks/')).length;
+      const before = executes();
+      const posting = env.run(['discuss', '--as', 'claude-1', 'racing']);
+      for (let i = 0; i < 100 && executes() === before; i++) {
+        await new Promise((res) => setTimeout(res, 20));
+      }
+      assert.equal((await env.run(['clear', '--yes'])).code, 0);
+      const r = await posting;
+      assert.equal(r.code, 1, r.stderr);
+      assert.match(r.stderr, /^agentchat: Discord 沒有正常回應（HTTP 500），訊息可能已經送出.*；更新本機狀態也失敗：claude-1 的本機狀態已被主導者用 agentchat clear 清除/);
+    });
+
+    test('狀態檔或標記裡的名稱不合法時，標記改用檔名，不會寫到目錄外', async () => {
+      await env.join('claude-1');
+      const dir = path.dirname(env.agentFile('claude-1'));
+      env.patchState('claude-1', { name: '../../escape' });
+      fs.writeFileSync(path.join(dir, 'gemini-1.cleared'), '{"name":"../x"}');
+      fs.writeFileSync(path.join(dir, 'codex-1.cleared'), 'not json');
+      const r = await env.run(['clear', '--yes']);
+      assert.equal(r.code, 0, r.stderr);
+      assert.deepEqual(fs.readdirSync(dir).sort(), ['claude-1.cleared', 'codex-1.cleared', 'gemini-1.cleared']);
+      assert.ok(!fs.existsSync(path.join(env.stateDir, 'escape.cleared')));
+      assert.ok(!fs.existsSync(path.join(env.stateDir, 'agents', 'x.cleared')));
+    });
+
+    test('切段發言送出一部分後失敗、途中又被 clear：保留原本的錯誤，另外說明狀態也更新失敗', async () => {
+      await env.join('claude-1');
+      env.mock.delay({ method: 'POST', path: /^\/webhooks\//, ms: 3000 });
+      env.mock.fail({ method: 'POST', path: /^\/webhooks\//, status: 500, skip: 1 });
+      const executes = () => env.mock.requests.filter((q) => q.method === 'POST' && q.path.includes('/webhooks/')).length;
+      const before = executes();
+      const posting = env.run(['post', '--as', 'claude-1', '長'.repeat(2500)]);
+      for (let i = 0; i < 100 && executes() === before; i++) {
+        await new Promise((res) => setTimeout(res, 20));
+      }
+      assert.equal((await env.run(['clear', '--yes'])).code, 0);
+      const r = await posting;
+      assert.equal(r.code, 1, r.stderr);
+      assert.match(r.stderr, /已送出 1\/\d 段：\d+；更新本機狀態也失敗：claude-1 的本機狀態已被主導者用 agentchat clear 清除：.*；不要補送，先停下來告訴使用者）/);
+      assert.doesNotMatch(r.stderr, /請只補送剩下的部分/);
+    });
   });
 });
 

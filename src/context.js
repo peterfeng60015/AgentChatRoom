@@ -5,7 +5,7 @@ import { compareSnowflake, createClient } from './discord.js';
 import { DiscordError, UserError } from './errors.js';
 import { cmdText, isSystemMessage, normalize, roundLimit, validateAgentName } from './protocol.js';
 import { fmtSize, oneLine } from './render.js';
-import { clearWebhook, loadAgent, loadWebhook, saveWebhook } from './state.js';
+import { clearWebhook, loadAgent, loadWebhook, missingAgentError, saveWebhook } from './state.js';
 
 export function createContext({ command, values, positionals, stdin }) {
   let room;
@@ -41,7 +41,7 @@ export function joinHint(name, room) {
 export function requireAgent(ctx) {
   const name = agentName(ctx);
   const state = loadAgent(ctx.room.channelId, name);
-  if (!state) throw new UserError(`${name} 還沒進房：先執行 ${joinHint(name, ctx.room)}`);
+  if (!state) throw missingAgentError(ctx.room.channelId, name, `${name} 還沒進房：先執行 ${joinHint(name, ctx.room)}`);
   return state;
 }
 

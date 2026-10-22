@@ -5,7 +5,7 @@ import { LEFT_TEXT, applyEach, buildMessage, cmdText, reminders } from '../proto
 import { kindLabel, oneLine, renderMessages, section } from '../render.js';
 import { acquireWaitLock, appendLog, loadAgent, recordOwnMessages, updateAgent } from '../state.js';
 import { normalizeAll, phaseOf, publicMessage, requireAgent, roundInfo, summaryLine } from '../context.js';
-import { sendParts } from '../publish.js';
+import { afterSent, sendParts } from '../publish.js';
 
 export const summary = '長輪詢等新訊息，套用主導者指令並移動游標';
 export const usage = 'agentchat wait --as <名稱> [--timeout <秒>] [--until any|mention|moderator]';
@@ -128,11 +128,16 @@ async function waitLocked(ctx, room, initial, timeout, until) {
         notes.push(`自動 [IDLE] 送出失敗（${why}），下次 wait 會再試；可用 ${cmdText(updated.name, 'read', '--last 5', room)} 確認是否已送出`);
       }
       if (ids) {
-        updated = updateAgent(room.channelId, state.name, (s) => {
-          recordOwnMessages(s, ids);
-          s.phase = 'idle';
-        });
-        appendLog(room.channelId, { dir: 'out', agent: state.name, tag: 'IDLE', ids, content });
+        updated = afterSent(
+          '自動 [IDLE] ',
+          ids,
+          () =>
+            updateAgent(room.channelId, state.name, (s) => {
+              recordOwnMessages(s, ids);
+              s.phase = 'idle';
+            }),
+          { channelId: room.channelId, entry: { dir: 'out', agent: state.name, tag: 'IDLE', ids, content } },
+        );
         status = 'idle';
       }
     }

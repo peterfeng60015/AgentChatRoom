@@ -47,6 +47,16 @@ describe('頭像：預設 DiceBear', () => {
     assert.equal(env.mock.executions.at(-1).payload.avatar_url, `${DICEBEAR}/bottts/png?seed=claude-1&size=128`);
   });
 
+  test('名稱不分大小寫：Claude-1 與 claude-1 同圖（seed 用小寫）', async () => {
+    env = await setup();
+    await env.join('Claude-1');
+    assert.equal(env.mock.executions.at(-1).payload.avatar_url, `${DICEBEAR}/bottts/png?seed=claude-1&size=128`);
+    const r = await env.run(['post', '--as', 'CLAUDE-1', 'hi']);
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(env.mock.executions.at(-1).payload.avatar_url, `${DICEBEAR}/bottts/png?seed=claude-1&size=128`);
+    assert.equal(avatarUrl({ avatarUrlTemplate: '{name}', avatarStyles: {} }, { name: 'AbC-1' }), 'abc-1');
+  });
+
   test('自動 [IDLE] 帶頭像；doctor --send-test 不帶；狀態檔沒有 vendor 時用 other 的風格', async () => {
     env = await setup();
     await env.join('claude-1');
