@@ -183,6 +183,15 @@ test('saveAgent 原子寫入：先寫同目錄的暫存檔，再改名成狀態�
   assert.deepEqual(loadAgent(CH, 'atomic-1'), s);
 });
 
+test('狀態檔名一律小寫，讀取不分大小寫（§3.3、§6.1）', () => {
+  const ch = '900000000000000004';
+  const s = fresh({ name: 'Claude-Up', channelId: ch });
+  saveAgent(s);
+  assert.deepEqual(fs.readdirSync(path.join(STATE, 'agents', ch)), ['claude-up.json']);
+  assert.equal(loadAgent(ch, 'CLAUDE-UP')?.name, 'Claude-Up');
+  assert.equal(loadAgent(ch, 'claude-up')?.name, 'Claude-Up');
+});
+
 test('loadAgent：狀態檔不存在回 null', () => {
   assert.equal(loadAgent(CH, 'nobody'), null);
   assert.equal(loadAgent('1', 'claude-1'), null);

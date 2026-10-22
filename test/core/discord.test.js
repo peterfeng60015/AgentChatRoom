@@ -70,6 +70,8 @@ const isDiscordError = (status) => (e) => {
   if (status !== undefined) assert.equal(e.status, status);
   return true;
 };
+// 提示裡的指令可以多帶 --as 等選項，只要是 agentchat read 加 --last 5。
+const READ_HINT = /agentchat read\b[^\n]*--last 5\b/;
 const errorOf = (promise) => promise.then(() => assert.fail('應該要丟錯'), (e) => e);
 
 // ---- snowflake ----
@@ -240,7 +242,7 @@ describe('executeWebhook / download', () => {
       const err = await errorOf(client().executeWebhook(HOOK, { content: '[INFO] hi', username: 'claude-1', allowedMentions: { parse: [] } }));
       isDiscordError()(err);
       assert.equal(requests.length, 1);
-      assert.ok(err.message.includes('agentchat read --last 5'), err.message);
+      assert.ok(READ_HINT.test(err.message), err.message);
     });
   }
 
@@ -279,7 +281,7 @@ describe('executeWebhook / download', () => {
     const err = await errorOf(client().executeWebhook(HOOK, { content: '[INFO] hi', username: 'claude-1', allowedMentions: { parse: [] } }));
     isDiscordError()(err);
     assert.equal(requests.length, 1);
-    assert.ok(err.message.includes('agentchat read --last 5'), err.message);
+    assert.ok(READ_HINT.test(err.message), err.message);
   });
 
   test('download 回傳檔案內容的 Buffer', async () => {
