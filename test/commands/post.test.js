@@ -272,7 +272,7 @@ describe('discuss、ack、ask、progress、done 的階段與欄位', () => {
     assert.equal(r.code, 0, r.stderr);
     assert.equal(env.readState('claude-1').discussRound, 3);
     assert.equal(env.mock.executions.at(-1).payload.content, '[DISCUSS]\n\n第 3 則');
-    assert.equal(env.mock.executions.at(-1).payload.username, 'claude-1 (前端)');
+    assert.equal(env.mock.executions.at(-1).payload.username, '前端（claude-1）');
 
     r = await env.run(['discuss', '--as', 'claude-1', '第 4 則']);
     assert.equal(r.code, 3);
@@ -367,8 +367,8 @@ describe('discuss、ack、ask、progress、done 的階段與欄位', () => {
     const r = await env.run(['post', '--as', name, 'hi']);
     assert.equal(r.code, 0, r.stderr);
     const username = env.mock.executions.at(-1).payload.username;
-    assert.ok(username.length <= 80);
-    assert.ok(username.startsWith(`${name} (`) && username.endsWith(')'));
+    assert.equal(username.length, 80);
+    assert.ok(username.startsWith('很長的角色') && username.endsWith(`（${name}）`), username);
     assert.ok(webhookMessages(env.mock).length >= 2);
   });
 });

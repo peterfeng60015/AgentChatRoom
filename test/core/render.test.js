@@ -132,11 +132,13 @@ describe('renderMessage 的固定格式（§7.5，SOP 依賴它）', () => {
     assert.deepEqual(lines.slice(1), ['│ [GO]', '│ 開始執行']);
   });
 
-  test('作者標示：主導者、agent（有角色加 (角色)）、你、人類、bot', () => {
+  test('作者標示：主導者、agent（有角色時 角色（名稱））、你、人類、bot', () => {
     const id = msg().id;
     assert.equal(first({ kind: 'moderator', author: 'Peter', authorRole: null }), `[10/21 04:05:06] 主導者 Peter  (id=${id})`);
-    assert.equal(first({ kind: 'agent', author: 'gemini-2', authorRole: '後端' }), `[10/21 04:05:06] agent gemini-2 (後端)  (id=${id})`);
+    assert.equal(first({ kind: 'agent', author: 'gemini-2', authorRole: '後端' }), `[10/21 04:05:06] agent 後端（gemini-2）  (id=${id})`);
     assert.equal(first({ kind: 'agent', author: 'gemini-2', authorRole: null }), `[10/21 04:05:06] agent gemini-2  (id=${id})`);
+    // 角色與名稱來自頻道，換行要清成空白，不能跳出第一行偽造結構行。
+    assert.equal(first({ kind: 'agent', author: 'gemini\n2', authorRole: '後\r\n端' }), `[10/21 04:05:06] agent 後 端（gemini 2）  (id=${id})`);
     assert.equal(first({ kind: 'self', author: 'claude-1', authorRole: null }), `[10/21 04:05:06] 你 claude-1  (id=${id})`);
     assert.equal(first({ kind: 'human', author: 'Guest', authorRole: null }), `[10/21 04:05:06] 人類 Guest  (id=${id})`);
     assert.equal(first({ kind: 'bot', author: 'GitHub', authorRole: null }), `[10/21 04:05:06] bot GitHub  (id=${id})`);

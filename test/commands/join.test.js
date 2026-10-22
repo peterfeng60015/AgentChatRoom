@@ -132,6 +132,17 @@ describe('join', () => {
     assert.equal(forced.code, 0, forced.stderr);
   });
 
+  test('名稱衝突：新格式 角色（名稱）的訊息也認得；角色剛好是我的名稱不算', async () => {
+    const hook = env.mock.addWebhook({ name: 'agentchat' });
+    env.mock.addMessage({ author: 'webhook', webhookId: hook.id, username: 'claude-1（gemini-1）', content: '[DISCUSS]\n\n角色叫 claude-1' });
+    let r = await env.run(['join', '--as', 'claude-1', '--vendor', 'claude']);
+    assert.equal(r.code, 0, r.stderr);
+    env.mock.addMessage({ author: 'webhook', webhookId: hook.id, username: '後端（Codex-1）', content: '[DISCUSS]\n\n我覺得…' });
+    r = await env.run(['join', '--as', 'codex-1', '--vendor', 'codex']);
+    assert.equal(r.code, 3);
+    assert.match(r.stderr, /24 小時內有人用過/);
+  });
+
   test('名稱衝突：最後一則是 [LEAVE]、超過 24 小時、或是別的 webhook，都不算衝突', async () => {
     const hook = env.mock.addWebhook({ name: 'agentchat' });
     env.mock.addMessage({ author: 'webhook', webhookId: hook.id, username: 'claude-1', content: '[LEAVE] claude-1' });
@@ -168,7 +179,7 @@ describe('join', () => {
     assert.equal(state.isolation, 'worktree');
     assert.equal(state.assigned, true);
     const join = webhookMessages(env.mock).at(-1);
-    assert.equal(join.author.username, 'claude-1 (前端)');
+    assert.equal(join.author.username, '前端（claude-1）');
   });
 
   test('晚進房：議題之後的 [ASSIGN]、[GO]、[STOP] 都依序套用，直接到達正確階段', async () => {

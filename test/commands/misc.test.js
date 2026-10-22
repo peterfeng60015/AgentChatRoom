@@ -328,7 +328,7 @@ describe('status、read、download、Discord 錯誤', () => {
     const r = await env.run(['read', '--as', 'claude-1', '--last', '3']);
     const blocks = r.stdout.trimEnd().split('\n').slice(1).join('\n').split('\n---\n');
     assert.equal(blocks.length, 3);
-    assert.match(blocks[0], /^\[\d\d\/\d\d \d\d:\d\d:\d\d\] agent gemini-1 \(後端\)  \(id=\d+\)  ← 提到你\n│ @claude-1 嗨$/);
+    assert.match(blocks[0], /^\[\d\d\/\d\d \d\d:\d\d:\d\d\] agent 後端（gemini-1）  \(id=\d+\)  ← 提到你\n│ @claude-1 嗨$/);
     assert.match(blocks[1], /^\[[^\]]+\] 人類 Someone  \(id=\d+\)\n│ 路人$/);
     assert.match(blocks[2], /^\[[^\]]+\] 你 claude-1  \(id=\d+\)\n│ \[INFO\]\n│ \n│ 我的話$/);
   });

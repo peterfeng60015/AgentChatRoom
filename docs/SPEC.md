@@ -180,7 +180,7 @@ agent 用：
 | kind | 判斷 |
 |---|---|
 | `moderator` | 作者 ID 等於 `moderatorUserId` |
-| `self` | 經由本房 webhook 發出，且顯示名稱是 `我的名稱` 或以 `我的名稱 (` 開頭 |
+| `self` | 經由本房 webhook 發出，且顯示名稱用 `splitAgentName()` 拆出的名稱等於我的名稱（不分大小寫）：`我的名稱`、`角色（我的名稱）`，或舊格式 `我的名稱 (角色)` |
 | `agent` | 經由本房 webhook 發出的其他訊息 |
 | `bot` | 其他 webhook 或 bot 帳號發的訊息 |
 | `human` | 其他人類 |
@@ -400,9 +400,9 @@ agent 用：
 | `targetsOf(content)`（新增） | 只看第一行，回 `{ hasAt, broadcast }`：第一行有沒有 @ 位置、有沒有 @ 到廣播詞；對象比對交給 `isTargeted` 用 `mentionsWord` 做 |
 | `isTargeted(msg, self)`（新增） | §4.4「指令對我生效」；`msg` 是 `normalize()` 的結果。`msg.kind` 存在且不是 `moderator` 時一律 `false`；沒有 `kind`（手工組的物件）時只看標籤與第一行。`normalize()` 的 `targetsMe` 只有主導者訊息可能為 `true` |
 | `resolveMentions(text, room)`（新增） | 把 `@moderator`、`@主導者`（含全形 ＠）換成 `<@moderatorUserId>` |
-| `displayName(name, role)`（修改） | `名稱 (角色)`，總長截到 80 字 |
-| `splitAgentName(username)` | 回 `{ name, role }` |
-| `isSelfName(username, name)` | 顯示名稱是否屬於這個 agent |
+| `displayName(name, role)`（修改） | 有角色時 `角色（名稱）`（全形括號，括號前不空格），沒有角色時只有 `名稱`；總長截到 80 字，只截角色，名稱保持完整 |
+| `splitAgentName(username)`（修改） | 回 `{ name, role }`；認得新格式 `角色（名稱）`（最後一對全形括號裡是符合名稱規則的字串，角色是它前面的全部）與舊格式 `名稱 (角色)`，兩者都不是時整個當名稱、`role` 為 `null` |
+| `isSelfName(username, name)`（修改） | 顯示名稱是否屬於這個 agent：`splitAgentName(username).name` 與 `name` 不分大小寫相等（新舊格式都認得） |
 | `sanitizeRole(role)`（修改） | 刪除（不是換成空白）括號（半形與全形）、`@`、`＠`、`#`、`:`、`：`、反引號；換行與連續空白換成一個 `-`，去掉頭尾的 `-`；`discord`、`clyde`（不分大小寫）換成 `dc`、`cl`，重複換到不再出現為止（Discord 拒收含這兩個字的 webhook 名稱）；截到 40 字；空字串回 `null`。例：`前端(主)` → `前端主`、`QA Lead` → `QA-Lead`、`Discord API` → `dc-API` |
 | `authorKind(raw, room, self, opts)`（修改） | §4.5；`opts.webhookId` 是本房 webhook ID |
 | `normalize(raw, room, self, opts)`（修改） | 回 `{ id, timestamp, kind, author, authorRole, authorId, content, tag, title, fields, body, mentionsMe, targetsMe, mentionsModerator, replyTo, attachments }`；`replyTo` 取自 `message_reference.message_id`；「回覆我的訊息」用 `self.ownMessageIds` 判斷（`self` 就是 agent 狀態物件）；`opts` 只帶 `webhookId`；`self` 可以是 `null` |
@@ -431,7 +431,7 @@ agent 用：
 
 ### 7.5 `src/render.js`、`src/args.js`、`src/errors.js`
 
-`renderMessage(m, { as, room })`、`renderMessages(list, { as, room })`（附檔行的 download 指令與其他提示一樣用完整形式，有 `room.roomArg` 時帶 `--room`；作者名稱與附檔名用 `oneLine()` 清理；格式固定，SOP 依賴它：第一行 `[MM/DD HH:MM:SS] <作者標示>  (id=<訊息ID>)`，提到我或指令對我生效時行尾加 `  ← 提到你`；作者標示是 `主導者 <名稱>`、`agent <名稱>`（有角色時加 ` (<角色>)`）、`你 <名稱>`、`人類 <名稱>`、`bot <名稱>`；接著是訊息原文，**每一行前面加 `│ `**（`\r\n`、單獨的 `\r`、`\n` 都當成換行）（工具產生的結構行一律頂格，原文一律縮排，別人無法在內文裡偽造主導者訊息或「注意」段落）；每個附檔一行（頂格） `附檔：<檔名>（<大小>）→ agentchat download --as <as> <訊息ID>`，沒有 `as` 時印 `--as <你的名稱>`；多則之間用一行 `---` 分隔）、`fmtSize(n)`（1024 進位：小於 1024 印 `N B`；小於 1024×1024 印四捨五入的 `N KB`；其餘印一位小數的 `N.N MB`）、`fmtTime(iso)`（本機時區）、`kindLabel(kind)`、`section(title, items)`；
+`renderMessage(m, { as, room })`、`renderMessages(list, { as, room })`（附檔行的 download 指令與其他提示一樣用完整形式，有 `room.roomArg` 時帶 `--room`；作者名稱與附檔名用 `oneLine()` 清理；格式固定，SOP 依賴它：第一行 `[MM/DD HH:MM:SS] <作者標示>  (id=<訊息ID>)`，提到我或指令對我生效時行尾加 `  ← 提到你`；作者標示是 `主導者 <名稱>`、`agent <名稱>`（有角色時是 `agent <角色>（<名稱>）`）、`你 <名稱>`、`人類 <名稱>`、`bot <名稱>`；接著是訊息原文，**每一行前面加 `│ `**（`\r\n`、單獨的 `\r`、`\n` 都當成換行）（工具產生的結構行一律頂格，原文一律縮排，別人無法在內文裡偽造主導者訊息或「注意」段落）；每個附檔一行（頂格） `附檔：<檔名>（<大小>）→ agentchat download --as <as> <訊息ID>`，沒有 `as` 時印 `--as <你的名稱>`；多則之間用一行 `---` 分隔）、`fmtSize(n)`（1024 進位：小於 1024 印 `N B`；小於 1024×1024 印四捨五入的 `N KB`；其餘印一位小數的 `N.N MB`）、`fmtTime(iso)`（本機時區）、`kindLabel(kind)`、`section(title, items)`；
 `parse(argv, options)`、`requireAs(values)`、`toInt(value, fallback, label)`；`UserError`、`DiscordError`。
 
 ## 8. 測試

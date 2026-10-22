@@ -290,30 +290,40 @@ function truncate(text, limit) {
   return out;
 }
 
+// §7.1：有角色時 `角色（名稱）`（全形括號、括號前不空格），沒有角色時只有名稱；
+// 超過 80 字只截角色，名稱保持完整（名稱最多 31 字，實際上截不到名稱）。
 export function displayName(name, role) {
   const n = String(name);
   if (!role) return truncate(n, DISPLAY_NAME_LIMIT);
-  const full = `${n} (${role})`;
+  const full = `${role}（${n}）`;
   if (full.length <= DISPLAY_NAME_LIMIT) return full;
-  const room = DISPLAY_NAME_LIMIT - n.length - 3;
+  const room = DISPLAY_NAME_LIMIT - n.length - 2;
   if (room <= 0) return truncate(n, DISPLAY_NAME_LIMIT);
-  return `${n} (${truncate(role, room)})`;
+  return `${truncate(role, room)}（${n}）`;
 }
 
+// 新格式 `角色（名稱）`；頻道裡還有舊格式 `名稱 (角色)` 的訊息，兩種都要認得，self 才不會誤判。
+// 括號裡只收名稱的合法字元（§6.1），角色那段不限：角色沒清理過（例如狀態檔被手改成 `前端（主）`）也拆得出名稱，
+// 括號裡不像名稱的（例如有人手動用 webhook 發 `Peter（產品）`）也不會被當成名稱。
+const NEW_NAME_RE = /^(.+)（([a-z0-9][a-z0-9_-]{0,30})）$/is;
+const OLD_NAME_RE = /^(.*?) \((.*)\)$/s;
+
 export function splitAgentName(username = '') {
-  const m = String(username ?? '').match(/^(.*?)(?: \((.*)\))?$/s);
-  return { name: m ? m[1] : username, role: m && m[2] ? m[2] : null };
+  const u = String(username ?? '');
+  const m = u.match(NEW_NAME_RE);
+  if (m) return { name: m[2], role: m[1] };
+  const old = u.match(OLD_NAME_RE);
+  if (old) return { name: old[1], role: old[2] || null };
+  return { name: u, role: null };
 }
 
 // 名稱比對一律不分大小寫（§6.1）。
 export function isSelfName(username = '', name) {
   if (!name) return false;
-  const u = String(username ?? '').toLowerCase();
-  const n = String(name).toLowerCase();
-  return u === n || u.startsWith(`${n} (`);
+  return splitAgentName(username).name.toLowerCase() === String(name).toLowerCase();
 }
 
-// 角色會出現在 webhook 顯示名稱 `名稱 (角色)` 與 @角色 裡：刪掉會破壞格式或觸發 mention 的字元，
+// 角色會出現在 webhook 顯示名稱 `角色（名稱）` 與 @角色 裡：刪掉會破壞格式或觸發 mention 的字元，
 // 空白換成 -，讓角色一定能用 @角色 提到。
 export function sanitizeRole(role) {
   if (role === undefined || role === null) return null;
