@@ -19,7 +19,7 @@ import {
 import { STATE_DIR, appendLog, clearAgentWebhook, clearWebhook, loadAgentWebhook, recordOwnMessages, updateAgent } from './state.js';
 import { ENV_FILE, loadEnv } from './config.js';
 import os from 'node:os';
-import { countUnread, ensureWebhook, phaseOf, requireAgent, unreadLine } from './context.js';
+import { countUnread, ensureWebhook, phaseOf, rememberRoomWebhook, requireAgent, unreadLine } from './context.js';
 import { section } from './render.js';
 
 const MB = 1024 * 1024;
@@ -309,18 +309,39 @@ export function agentWebhookLostText(name, room) {
   return `專屬 webhook 已失效，改用共用 webhook 發言；要換回自己的頭像請重新執行 ${cmdText(name, 'avatar', '--file <圖檔>', room)}`;
 }
 
-// 經由本房 webhook 發言。agent 有專屬 webhook（§6.2）時用它、不帶 avatar_url；它失效（404／401）時刪掉快取，
-// 改用共用 webhook 加 DiceBear 頭像，並在 ctx.agentWebhookLost 記下來讓輸出提示。
+// 錯誤訊息補上「專屬 webhook 已失效」的提示：發言失敗時這一則的輸出沒有別的地方會說，而快取已經刪掉，
+// 下一次發言不會再提示，agent 就不知道頭像已經換回 DiceBear。
+export function noteAgentWebhookLost(e, ctx, name) {
+  if (!ctx.agentWebhookLost || !e || e.agentWebhookLost) return e;
+  e.agentWebhookLost = true;
+  e.message += `；${agentWebhookLostText(name, ctx.room)}`;
+  return e;
+}
+
+const GONE = [401, 404];
+
+// 經由本房 webhook 發言。agent 有專屬 webhook（§6.2）時用它、不帶 avatar_url；它失效（404／401，這一則沒有送出）時刪掉快取，
+// 改用共用 webhook 加 DiceBear 頭像重送這一則，並在 ctx.agentWebhookLost 記下來讓輸出提示。
+// 失效的專屬 webhook ID 記進辨識快取：快取刪掉後，它送出過的訊息（包括同一次切段已經送出的段）仍認得是自己（§4.5）。
 // 共用 webhook 的快取被刪掉（404／401）時重新取得一次再試。
 async function execute(ctx, { fallbackAvatarUrl, ...payload }, name) {
-  const own = name ? loadAgentWebhook(ctx.room.channelId, name) : null;
-  if (own) {
+  const channelId = ctx.room.channelId;
+  let own = name ? loadAgentWebhook(channelId, name) : null;
+  while (own) {
     try {
       return await ctx.client.executeWebhook(own, payload);
     } catch (e) {
-      if (!(e instanceof DiscordError) || ![401, 404].includes(e.status)) throw e;
-      clearAgentWebhook(ctx.room.channelId, name);
+      if (!(e instanceof DiscordError) || !GONE.includes(e.status)) throw e;
+      // 另一個行程（avatar）可能剛換成新的專屬 webhook：只刪失效的那一個，換了就改用新的。
+      const current = loadAgentWebhook(channelId, name);
+      if (current && current.id !== own.id) {
+        own = current;
+        continue;
+      }
+      rememberRoomWebhook(channelId, own.id);
+      clearAgentWebhook(channelId, name);
       ctx.agentWebhookLost = true;
+      own = null;
     }
   }
   return executeShared(ctx, { ...payload, avatarUrl: fallbackAvatarUrl });
@@ -331,7 +352,8 @@ async function executeShared(ctx, payload) {
   try {
     return await ctx.client.executeWebhook(webhook, payload);
   } catch (e) {
-    if (!(e instanceof DiscordError) || ![401, 404].includes(e.status)) throw e;
+    if (!(e instanceof DiscordError) || !GONE.includes(e.status)) throw e;
+    rememberRoomWebhook(ctx.room.channelId, webhook.id);
     clearWebhook(ctx.room.channelId);
     ({ webhook } = await ensureWebhook(ctx.client, ctx.room, { verify: false }));
     return ctx.client.executeWebhook(webhook, payload);
@@ -468,19 +490,24 @@ export async function publish(ctx, opts) {
         e.message += `；更新本機狀態也失敗：${err.message}`;
       }
     }
-    throw e;
+    throw noteAgentWebhookLost(e, ctx, state.name);
   }
 
-  const updated = afterSent(
-    '訊息',
-    ids,
-    () =>
-      updateAgent(room.channelId, state.name, (s) => {
-        recordOwnMessages(s, ids);
-        opts.mutate?.(s, ids);
-      }),
-    { channelId: room.channelId, entry: { dir: 'out', agent: state.name, tag, ids, content: resolved } },
-  );
+  let updated;
+  try {
+    updated = afterSent(
+      '訊息',
+      ids,
+      () =>
+        updateAgent(room.channelId, state.name, (s) => {
+          recordOwnMessages(s, ids);
+          opts.mutate?.(s, ids);
+        }),
+      { channelId: room.channelId, entry: { dir: 'out', agent: state.name, tag, ids, content: resolved } },
+    );
+  } catch (e) {
+    throw noteAgentWebhookLost(e, ctx, state.name);
+  }
 
   let unread = null;
   let unreadError = null;

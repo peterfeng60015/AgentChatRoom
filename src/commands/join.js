@@ -11,7 +11,7 @@ import {
   publicState,
   stateLines,
 } from '../context.js';
-import { guardSecrets, sendParts } from '../publish.js';
+import { agentWebhookLostText, guardSecrets, noteAgentWebhookLost, sendParts } from '../publish.js';
 
 export const summary = '進房：建立本機狀態、套用進行中的議題與指派，發 [JOIN]';
 export const usage =
@@ -169,7 +169,12 @@ export async function run(ctx) {
   const fields = { vendor, model: oneLine(ctx.values.model), host: oneLine(ctx.values.host) };
   const content = buildMessage('JOIN', name, fields);
   guardSecrets(room, content, []);
-  const ids = await sendParts(ctx, state, [content]);
+  let ids;
+  try {
+    ids = await sendParts(ctx, state, [content]);
+  } catch (e) {
+    throw noteAgentWebhookLost(e, ctx, name);
+  }
   recordOwnMessages(state, ids);
   if (notes.length) {
     state.lastNotes = notes;
@@ -189,6 +194,8 @@ export async function run(ctx) {
     `語言：${room.language}`,
     ...stateLines(state, room),
   ];
+  // §6.2：專屬 webhook 失效、[JOIN] 改用共用 webhook 送出時，和發言類指令一樣提示。
+  if (ctx.agentWebhookLost) text.push(agentWebhookLostText(name, room));
   if (active) {
     text.push('', '進行中的議題：', renderMessage(active.topic, { as: name, room }));
     if (applied.length) text.push('', '之後對你生效的主導者指令：', renderMessages(applied, { as: name, room }));
@@ -208,6 +215,7 @@ export async function run(ctx) {
       directives: applied.map(publicMessage),
       notes,
       reminders: rem,
+      ...(ctx.agentWebhookLost ? { agentWebhookLost: true } : {}),
     },
   };
 }

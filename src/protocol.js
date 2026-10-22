@@ -340,11 +340,11 @@ export function sanitizeRole(role) {
 }
 
 // §4.5 作者身分。opts.webhookIds（集合）與 opts.webhookId（單一，舊介面）是本房 webhook；都沒有時所有 webhook 訊息都算本房。
-export function authorKind(raw, room, self, opts = {}) {
+export function authorKind(raw, room, self, opts) {
   if (raw?.author?.id && raw.author.id === room.moderatorUserId) return 'moderator';
   if (raw?.webhook_id) {
-    const ids = new Set(opts.webhookIds ?? []);
-    if (opts.webhookId) ids.add(opts.webhookId);
+    const ids = new Set(opts?.webhookIds ?? []);
+    if (opts?.webhookId) ids.add(opts.webhookId);
     if (ids.size && !ids.has(raw.webhook_id)) return 'bot';
     if (self && isSelfName(raw.author?.username, self.name)) return 'self';
     return 'agent';
@@ -367,7 +367,7 @@ function replyIdOf(raw) {
 }
 
 // 把 Discord 原始訊息整理成工具內部統一格式。
-export function normalize(raw, room, self, opts = {}) {
+export function normalize(raw, room, self, opts) {
   const kind = authorKind(raw, room, self, opts);
   const content = raw.content || '';
   const parsed = parseMessage(content);

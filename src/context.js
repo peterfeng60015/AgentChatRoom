@@ -63,40 +63,63 @@ export function agentWebhookName(room, name) {
   return `${room.webhookName}-${String(name).toLowerCase()}`;
 }
 
+// 把查到的 ID 合併進辨識快取。寫入前重讀一次，免得蓋掉別的行程剛寫進去的；room 優先，同一個 ID 不會同時在 other。
+function mergeKnownWebhooks(channelId, roomIds, otherIds = []) {
+  const known = loadKnownWebhooks(channelId);
+  const roomSet = new Set([...known.room, ...roomIds]);
+  const other = [...known.other, ...otherIds].filter((id) => !roomSet.has(id));
+  saveKnownWebhooks(channelId, { room: [...roomSet], other });
+}
+
+// 本機快取的本房 webhook 失效（被刪或 token 不對）而要刪快取時呼叫：先把它的 ID 記進辨識快取的 room，
+// 它以前發的訊息（包括切段發言已經送出的段）才不會在快取刪掉後被當成陌生 webhook（bot）。寫不進去不影響發言。
+export function rememberRoomWebhook(channelId, id) {
+  if (!id) return;
+  try {
+    mergeKnownWebhooks(channelId, [id]);
+  } catch {
+    // 辨識快取寫不進去：最多是那些舊訊息之後被歸為 bot（§4.5 已知限制）。
+  }
+}
+
 // §4.5 本房 webhook 的 ID 集合：共用 webhook、本機各 agent 的專屬 webhook、辨識快取的 room；
 // 這批訊息裡有不認得的 webhook ID 時查一次頻道的 webhook 清單（同一個 ID 每個行程只查一次）。
-// 回傳 null 表示不知道（連共用 webhook 都不知道又查不到），呼叫端照舊規則把所有 webhook 訊息都算本房。
+// 查到的結果另外記在 ctx 上：辨識快取寫不進去時，同一個行程之後的輪詢也照這次的結果判斷，不會把查到的本房 ID 當成 bot。
+// 回傳 null 表示一個本房 ID 都不知道（本機沒有快取，又查不到或頻道裡沒有本工具的 webhook），呼叫端照舊規則把所有 webhook 訊息都算本房。
 export async function roomWebhookIds(ctx, raws) {
   const room = ctx.room;
+  ctx.webhookLookup ??= { looked: new Set(), room: new Set(), other: new Set() };
+  const memo = ctx.webhookLookup;
   const known = loadKnownWebhooks(room.channelId);
   const shared = loadWebhook(room.channelId)?.id ?? null;
-  const ids = new Set(known.room);
+  const ids = new Set([...known.room, ...memo.room]);
   if (shared) ids.add(shared);
   for (const hook of listAgentWebhooks(room.channelId)) ids.add(hook.id);
-  const other = new Set(known.other);
-  ctx.webhookLookups ??= new Set();
-  const unknown = [...new Set(raws.map((r) => r?.webhook_id).filter(Boolean))].filter(
-    (id) => !ids.has(id) && !other.has(id) && !ctx.webhookLookups.has(id),
+  const other = new Set([...known.other, ...memo.other]);
+  const unknown = [...new Set((raws || []).map((r) => r?.webhook_id).filter(Boolean))].filter(
+    (id) => !ids.has(id) && !other.has(id) && !memo.looked.has(id),
   );
   if (unknown.length) {
-    for (const id of unknown) ctx.webhookLookups.add(id);
+    for (const id of unknown) memo.looked.add(id);
     let list = null;
     try {
       list = await ctx.client.listWebhooks(room.channelId);
     } catch {
-      // 查不到（例如沒有管理 Webhook 權限）就只用已知的。
+      // 查不到（例如沒有管理 Webhook 權限）就只用已知的，也不寫快取。
     }
     if (Array.isArray(list)) {
-      const found = list.filter((w) => w?.id && isRoomWebhookName(w.name, room)).map((w) => w.id);
-      for (const id of found) ids.add(id);
-      const strangers = unknown.filter((id) => !ids.has(id));
-      try {
-        saveKnownWebhooks(room.channelId, { room: [...known.room, ...found], other: [...known.other, ...strangers] });
-      } catch {
-        // 快取寫不進去不影響這次判斷，下次再查。
+      const found = list.filter((w) => w?.id && isRoomWebhookName(w.name, room)).map((w) => String(w.id));
+      for (const id of found) {
+        ids.add(id);
+        memo.room.add(id);
       }
-    } else if (!ids.size) {
-      return null;
+      const strangers = unknown.filter((id) => !ids.has(id));
+      for (const id of strangers) memo.other.add(id);
+      try {
+        mergeKnownWebhooks(room.channelId, found, strangers);
+      } catch {
+        // 快取寫不進去不影響判斷：這個行程用 ctx 上的結果，下一個行程再查。
+      }
     }
   }
   return ids.size ? ids : null;
@@ -119,6 +142,8 @@ export async function ensureWebhook(client, room, { verify = true } = {}) {
       if (!info?.channel_id || info.channel_id === room.channelId) return { webhook: cached, source: 'cache' };
     } catch (e) {
       if (!(e instanceof DiscordError) || ![401, 403, 404].includes(e.status)) throw e;
+      // 失效的是本房以前的共用 webhook：記住它的 ID，它發過的訊息仍算本房（§4.5）。屬於別的頻道的就不記。
+      rememberRoomWebhook(room.channelId, cached.id);
     }
     clearWebhook(room.channelId);
   }

@@ -5,7 +5,7 @@ import { LEFT_TEXT, applyEach, buildMessage, cmdText, reminders } from '../proto
 import { kindLabel, oneLine, renderMessages, section } from '../render.js';
 import { acquireWaitLock, appendLog, loadAgent, recordOwnMessages, updateAgent } from '../state.js';
 import { normalizeAll, phaseOf, publicMessage, requireAgent, roundInfo, summaryLine } from '../context.js';
-import { afterSent, sendParts } from '../publish.js';
+import { afterSent, agentWebhookLostText, sendParts } from '../publish.js';
 
 export const summary = '長輪詢等新訊息，套用主導者指令並移動游標';
 export const usage = 'agentchat wait --as <名稱> [--timeout <秒>] [--until any|mention|moderator]';
@@ -140,6 +140,8 @@ async function waitLocked(ctx, room, initial, timeout, until) {
         );
         status = 'idle';
       }
+      // §6.2：專屬 webhook 失效（快取已刪），[IDLE] 改用共用 webhook 送出或送出失敗，都要讓 agent 知道頭像已換回。
+      if (ctx.agentWebhookLost) notes.push(agentWebhookLostText(updated.name, room));
     }
   }
 
@@ -169,6 +171,7 @@ async function waitLocked(ctx, room, initial, timeout, until) {
       messages: batch.map(publicMessage),
       notes,
       reminders: rem,
+      ...(ctx.agentWebhookLost ? { agentWebhookLost: true } : {}),
     },
   };
 }

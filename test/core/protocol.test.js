@@ -1018,6 +1018,19 @@ describe('authorKind（§4.5）', () => {
     assert.equal(authorKind(otherWebhookRaw('hi'), ROOM, self, {}), 'agent');
   });
 
+  test('opts 省略、是 null，或 webhookIds／webhookId 是 null 時，都等於不知道本房 ID（不丟錯）', () => {
+    assert.equal(authorKind(agentRaw('claude-1', 'hi'), ROOM, self), 'self');
+    assert.equal(authorKind(otherWebhookRaw('hi'), ROOM, self, null), 'agent');
+    assert.equal(authorKind(otherWebhookRaw('hi'), ROOM, self, { webhookIds: null, webhookId: null }), 'agent');
+    assert.equal(normalize(otherWebhookRaw('hi'), ROOM, self).kind, 'agent');
+    assert.equal(normalize(otherWebhookRaw('hi'), ROOM, self, null).kind, 'agent');
+    // 舊介面 webhookId 單獨給也照用。
+    assert.equal(normalize(otherWebhookRaw('hi'), ROOM, self, { webhookId: WEBHOOK_ID }).kind, 'bot');
+    // webhookIds 用陣列或 Set 都可以，normalize 照樣轉交。
+    assert.equal(normalize(otherWebhookRaw('hi'), ROOM, self, { webhookIds: [WEBHOOK_ID] }).kind, 'bot');
+    assert.equal(normalize(agentRaw('claude-2', 'hi'), ROOM, self, { webhookIds: new Set([WEBHOOK_ID]) }).kind, 'agent');
+  });
+
   test('self 是 null 時沒有 self，本房 webhook 都是 agent', () => {
     assert.equal(authorKind(agentRaw('claude-1', 'hi'), ROOM, null, opts), 'agent');
     assert.equal(authorKind(modRaw('hi'), ROOM, null, opts), 'moderator');
