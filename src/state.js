@@ -296,7 +296,7 @@ function agentWebhookFile(channelId, name) {
 export function loadAgentWebhook(channelId, name) {
   try {
     const hook = readJson(agentWebhookFile(channelId, name), '專屬 webhook 快取');
-    return hook?.id && hook?.token ? hook : null;
+    return typeof hook?.id === 'string' && typeof hook?.token === 'string' && hook.id && hook.token ? hook : null;
   } catch {
     return null;
   }

@@ -41,12 +41,25 @@ function readImage(file) {
   }
   if (!stat.isFile()) throw new UserError(`圖檔不是一般檔案：${abs}`);
   if (stat.size > MAX_AVATAR_BYTES) throw new UserError(`圖檔超過 8 MB：${abs}；頭像建議 256×256 左右的 PNG`);
-  const data = fs.readFileSync(abs);
+  let data;
+  try {
+    data = fs.readFileSync(abs);
+  } catch (e) {
+    throw new UserError(`圖檔讀不到：${abs}（${e.code || e.message}）`);
+  }
   if (data.length > MAX_AVATAR_BYTES) throw new UserError(`圖檔超過 8 MB：${abs}；頭像建議 256×256 左右的 PNG`);
   if (!data.length) throw new UserError(`圖檔是空的：${abs}`);
   const type = imageFormat(data);
   if (!type) throw new UserError(`不是 PNG、JPEG 或 GIF 圖檔（看檔頭判斷）：${abs}；SVG 要先轉成 PNG`);
   return { abs, data, ...type };
+}
+
+// 50035（Invalid Form Body）是通用的表單錯誤：errors 樹指出別的欄位（例如 webhook 名稱含 discord）時不是圖的問題，
+// 保留 Discord 的原因；沒有 errors 樹或指出 avatar 時才當成圖被拒。
+function avatarRejected(data) {
+  const errors = data && typeof data === 'object' ? data.errors : null;
+  if (!errors || typeof errors !== 'object') return true;
+  return Object.prototype.hasOwnProperty.call(errors, 'avatar');
 }
 
 // Discord 拒絕時換成看得懂的說明（§6.3 avatar 第 3 步）。
@@ -63,7 +76,7 @@ function explain(e) {
       '這個頻道的 webhook 已達 Discord 上限 15 個，無法建立專屬 webhook；請主導者用 agentchat clear 清掉專屬 webhook，或到頻道設定 → 整合 → Webhook 刪掉不用的',
     );
   }
-  if (e.status === 413 || [50138, 40005, 50045].includes(code) || (e.status === 400 && code === 50035)) {
+  if (e.status === 413 || [50138, 40005, 50045].includes(code) || (e.status === 400 && code === 50035 && avatarRejected(e.data))) {
     return new DiscordError(e.status, e.data, 'Discord 拒收這張頭像，請換一張小一點的 PNG（例如 256×256）');
   }
   return e;
@@ -89,11 +102,16 @@ async function applyAvatar(client, room, name, avatar) {
   }
   const list = await client.listWebhooks(room.channelId);
   const found = (Array.isArray(list) ? list : [])
-    .filter((w) => w.name === webhookName && w.token)
+    .filter((w) => w?.name === webhookName && w.token && /^\d+$/.test(String(w.id)))
     .sort((a, b) => compareSnowflake(a.id, b.id))[0];
   if (found) {
-    await client.modifyWebhook(found.id, found.token, { avatar });
-    return { webhook: save(found), source: 'found' };
+    try {
+      const info = await client.modifyWebhook(found.id, found.token, { avatar });
+      return { webhook: save({ ...found, name: info?.name ?? found.name }), source: 'found' };
+    } catch (e) {
+      // 查清單之後才被刪掉（或 token 已失效）：和快取失效一樣，改建新的。
+      if (!(e instanceof DiscordError) || ![401, 404].includes(e.status)) throw e;
+    }
   }
   const created = await client.createWebhook(room.channelId, webhookName, avatar);
   if (!created?.id || !created?.token) throw new DiscordError(0, null, '建立的專屬 webhook 沒有 token，無法用來發言');
