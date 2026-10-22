@@ -281,7 +281,7 @@ export function checkSecretPath(abs, label) {
   const home = os.homedir();
   const reason = (() => {
     if (inside(realOrResolved(STATE_DIR), real)) {
-      return '在 agentchat 的狀態目錄裡（那裡有 webhook token；下載的檔案請先複製到其他目錄再附上）';
+      return '在 agentchat 的狀態目錄裡，這個路徑不能附檔或當內文（下載的附檔要轉附時，用 agentchat download --out 存到別處）';
     }
     if (fold(real) === fold(realOrResolved(ENV_FILE))) return '是工具目錄的 .env（含 bot token）';
     const ssh = realOrResolved(path.join(home, '.ssh'));

@@ -664,8 +664,8 @@ try { const rel = acquireWaitLock(${JSON.stringify(env.room.channelId)}, 'claude
     const d = (await env.run(['download', '--as', 'claude-1', msg.id, '--json'])).json();
     const r = await env.run(['post', '--as', 'claude-1', '--file', d.files[0].path, '轉傳']);
     assert.equal(r.code, 2);
-    assert.match(r.stderr, /請先複製到其他目錄/);
-    assert.ok(!r.stderr.includes('含 webhook token'));
+    assert.match(r.stderr, /狀態目錄裡，這個路徑不能附檔.*download --out/);
+    assert.ok(!r.stderr.includes('token'), '不要說成含 token');
   });
 
   test('PGP 私鑰區塊也擋；work 階段的等法兩種都寫出來', async () => {
