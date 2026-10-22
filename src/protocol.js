@@ -587,11 +587,12 @@ export function applyDirectives(state, messages, room) {
         // 同一個 branch 指派給多人時，worktree 模式下會互相衝突。只數像 agent 名稱的 @（英數字開頭、不是保留字），
         // `請和@前端協調` 這種提到角色的不算。
         const first = firstLineOf(m.content);
-        const agentAts = extractMentions(first).at.filter((p) => {
-          const word = (first.slice(p).match(/^[A-Za-z0-9][A-Za-z0-9_-]*/) || [''])[0].toLowerCase();
-          return word && !RESERVED_NAMES.includes(word) && !BROADCAST.has(word);
-        });
-        const many = targetsOf(m.content).broadcast || agentAts.length > 1;
+        const agentWords = new Set(
+          extractMentions(first)
+            .at.map((p) => (first.slice(p).match(/^[A-Za-z0-9][A-Za-z0-9_-]*/) || [''])[0].toLowerCase())
+            .filter((w) => w && !RESERVED_NAMES.includes(w) && !BROADCAST.has(w)),
+        );
+        const many = targetsOf(m.content).broadcast || agentWords.size > 1;
         const clash = branch && many ? '這則指派給了多人且指定同一個 branch，worktree 模式會衝突，請先用 ask 向主導者確認。' : '';
         const badIso =
           iso && iso !== 'worktree' && iso !== 'shared'
@@ -659,11 +660,10 @@ export function reminders(state, room, now = Date.now()) {
       break;
     }
     case 'work': {
-      const times = [state.lastProgressAt, state.workStartedAt, state.joinedAt]
-        .map((x) => (x ? Date.parse(x) : NaN))
-        .filter(Number.isFinite);
-      if (times.length) {
-        const minutes = Math.floor((now - Math.max(...times)) / 60000);
+      // 從上次 [PROGRESS] 算起；還沒回報過就從 [GO] 的時間算起。
+      const since = Date.parse(state.lastProgressAt || state.workStartedAt || state.joinedAt || '');
+      if (Number.isFinite(since)) {
+        const minutes = Math.floor((now - since) / 60000);
         if (minutes >= room.progressReminderMin) {
           list.push(`距上次 [PROGRESS] 已 ${minutes} 分鐘，請用 agentchat progress 回報進度。`);
         }

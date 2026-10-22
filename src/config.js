@@ -41,7 +41,7 @@ const NUMERIC = {
   maxDiscussionRounds: [1, true],
   waitTimeoutSec: [0, false],
   pollIntervalSec: [0.05, false],
-  idleLimitMin: [0, false],
+  idleLimitMin: [1, false],
   progressReminderMin: [0, false],
   maxFileMB: [0.001, false],
   maxUploadMB: [0.001, false],

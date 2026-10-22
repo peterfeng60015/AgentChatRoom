@@ -67,12 +67,18 @@ export async function readBody(ctx, positionals = ctx.positionals) {
   const file = ctx.values['body-file'];
   if (file !== undefined) {
     if (positionals.length) throw new UserError('內文只能三選一：位置參數、--body-file、-（stdin），不能同時給');
-    const abs = path.resolve(file);
+    const abs = path.resolve(file); // 相對路徑以目前目錄為準
+    let stat;
     try {
-      return fs.readFileSync(abs, 'utf8').trim();
+      stat = fs.statSync(abs);
     } catch {
       throw new UserError(`讀不到 --body-file：${abs}`);
     }
+    if (!stat.isFile()) throw new UserError(`--body-file 不是一般檔案：${abs}`);
+    if (stat.size > ctx.room.maxFileMB * MB) throw new UserError(`--body-file 超過 ${ctx.room.maxFileMB} MB：${abs}`);
+    const text = fs.readFileSync(abs, 'utf8').trim();
+    if (!text) throw new UserError(`--body-file 是空的：${abs}`);
+    return text;
   }
   if (positionals[0] === '-') {
     if (positionals.length > 1) throw new UserError('`-` 表示從 stdin 讀內文，後面不能再接其他內文');
@@ -108,7 +114,8 @@ export function checkPostTag(tag) {
 // 組出要送的全文。內文已經以標籤列開頭時照原樣送出；主導者標籤一律拒絕。
 // 專用指令（discuss、ack…）的內文若是別的 agent 標籤就拒絕，避免繞過該指令的規則。
 // rawBody 是使用者給的原始內文；指令自己拆過內文時（ask 把第一行放進標題）用它判斷標籤。
-export function composeText({ command, tag, title = '', fields = {}, body = '', rawBody }) {
+// userOptions：指令帶了使用者給的選項（progress 的 --percent、done 的 --commit 等），照原樣送會把它們丟掉，所以拒絕。
+export function composeText({ command, tag, title = '', fields = {}, body = '', rawBody, userOptions = false }) {
   const raw = rawBody ?? body;
   const parsed = parseMessageParts(raw);
   if (parsed.tag) {
@@ -118,6 +125,9 @@ export function composeText({ command, tag, title = '', fields = {}, body = '', 
     if (command === 'post') checkPostTag(parsed.tag);
     else if (parsed.tag !== tag) {
       throw new UserError(`${command} 只發 [${tag}]，內文開頭的 [${parsed.tag}] 不符；請拿掉標籤列，或改用 agentchat post`);
+    }
+    if (userOptions) {
+      throw new UserError(`內文已經以 [${parsed.tag}] 標籤列開頭，${command} 的選項不會生效；請拿掉內文的標籤列`);
     }
     return { tag: parsed.tag, text: raw.trim() };
   }
@@ -250,14 +260,12 @@ export async function publish(ctx, opts) {
     const problem = phaseError(state, cmd, room);
     if (problem) throw new ProtocolError(problem);
   }
-  if (tag === 'DISCUSS') {
-    const limit = roundLimit(state, room);
-    if ((state.discussRound ?? 0) >= limit) {
-      throw new ProtocolError(
-        `本段討論已發 ${state.discussRound}/${limit} 則 [DISCUSS]，已達上限。請 agentchat wait --until moderator 等主導者 [CONTINUE] 或 [GO]。`,
-      );
-    }
-  }
+  const roundFull = (s) => {
+    const limit = roundLimit(s, room);
+    if ((s.discussRound ?? 0) < limit) return null;
+    return `本段討論已發 ${s.discussRound}/${limit} 則 [DISCUSS]，已達上限。請 agentchat wait --until moderator 等主導者 [CONTINUE] 或 [GO]。`;
+  };
+  if (tag === 'DISCUSS' && roundFull(state)) throw new ProtocolError(roundFull(state));
   if (opts.transform) text = opts.transform(text);
 
   const resolved = resolveMentions(text, room);
@@ -266,26 +274,38 @@ export async function publish(ctx, opts) {
   const files = [...plan.extraFiles, ...loadFiles(opts.files, room, plan.extraFiles.length, extraBytes)];
   guardSecrets(room, resolved, files);
 
+  // [DISCUSS] 送出前在鎖內預扣一輪：同一個 agent 同時發兩則時，不會兩則都通過「還沒滿」的檢查。
+  if (tag === 'DISCUSS') {
+    updateAgent(room.channelId, state.name, (s) => {
+      const problem = phaseError(s, 'discuss', room) || roundFull(s);
+      if (problem) throw new ProtocolError(problem);
+      s.discussRound = (s.discussRound ?? 0) + 1;
+    });
+  }
+
   let ids;
   try {
     ids = await sendParts(ctx, state, plan.parts, files);
   } catch (e) {
     if (e.sentIds?.length) {
-      // 帶標籤列的第一段已經送出，這則發言算數：照樣更新狀態（ask 記待答問題、discuss 加輪數、done 改階段）。
+      // 帶標籤列的第一段已經送出，這則發言算數：照樣更新狀態（ask 記待答問題、done 改階段；discuss 的輪數已預扣）。
       updateAgent(room.channelId, state.name, (s) => {
         recordOwnMessages(s, e.sentIds);
-        if (tag === 'DISCUSS') s.discussRound = (s.discussRound ?? 0) + 1;
         opts.mutate?.(s, e.sentIds);
       });
       // 告訴 agent 哪幾段已經送出，免得整則重送造成重複。
       e.message += `（已送出 ${e.sentIds.length}/${plan.parts.length} 段：${e.sentIds.join(', ')}；請只補送剩下的部分）`;
+    } else if (tag === 'DISCUSS') {
+      // 一段都沒送出：退回預扣的那一輪。
+      updateAgent(room.channelId, state.name, (s) => {
+        s.discussRound = Math.max(0, (s.discussRound ?? 0) - 1);
+      });
     }
     throw e;
   }
 
   const updated = updateAgent(room.channelId, state.name, (s) => {
     recordOwnMessages(s, ids);
-    if (tag === 'DISCUSS') s.discussRound = (s.discussRound ?? 0) + 1;
     opts.mutate?.(s, ids);
   });
   appendLog(room.channelId, { dir: 'out', agent: state.name, tag, ids, content: resolved });

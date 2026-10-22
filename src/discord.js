@@ -54,8 +54,8 @@ async function retryAfterMs(res) {
   return Math.max(0, Math.ceil(seconds * 1000));
 }
 
-// retryBaseMs：5xx 與網路錯誤的退避基準，第 n 次重試等 retryBaseMs × n。
-export function createClient(token, { apiBase, retryBaseMs = 1000 } = {}) {
+// retryBaseMs：5xx 與網路錯誤的退避基準，第 n 次重試等 retryBaseMs × n。timeoutMs：單次請求的逾時。
+export function createClient(token, { apiBase, retryBaseMs = 1000, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
   const base = String(apiBase || process.env.AGENTCHAT_API_BASE || DEFAULT_API_BASE).replace(/\/+$/, '');
   try {
     new URL(base);
@@ -78,7 +78,7 @@ export function createClient(token, { apiBase, retryBaseMs = 1000 } = {}) {
     for (let attempt = 0; ; attempt++) {
       let res;
       try {
-        res = await fetch(base + route, { method, headers, body, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+        res = await fetch(base + route, { method, headers, body, signal: AbortSignal.timeout(timeoutMs) });
       } catch (e) {
         if (!isNetworkError(e)) throw new DiscordError(0, null, '無法送出 Discord API 請求（請檢查 bot token 是否含換行或特殊字元）');
         if (!retryUncertain) throw new DiscordError(0, null, `${UNCERTAIN_HINT}（${e.name === 'TimeoutError' ? '逾時' : e.cause?.code || '連線失敗'}）`);

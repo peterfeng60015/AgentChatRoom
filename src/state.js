@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { OWN_MESSAGE_KEEP } from './protocol.js';
-import { UserError } from './errors.js';
+import { ProtocolError, UserError } from './errors.js';
 
 // 每個 agent 的本機狀態（游標、角色、階段）都放這裡，不進 git。
 export const STATE_DIR = path.resolve(process.env.AGENTCHAT_STATE_DIR || path.join(os.homedir(), '.agentchat'));
@@ -49,6 +49,53 @@ function withLock(file, fn) {
   } finally {
     fs.rmSync(lock, { force: true });
   }
+}
+
+// 超過這個時間的 wait 鎖一定是殘留的（wait 最長 540 秒），避免 pid 被別的行程重用時誤判成還在跑。
+const WAIT_LOCK_MAX_AGE_MS = 15 * 60 * 1000;
+
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === 'EPERM';
+  }
+}
+
+// §6.3：同一個名稱同時只能有一個 wait。鎖檔內容是 pid；pid 已不在（或鎖太舊）就視為殘留，直接接手。
+// 回傳釋放鎖的函式。
+export function acquireWaitLock(channelId, name) {
+  const lock = agentFile(channelId, name).replace(/\.json$/, '.wait.lock');
+  fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      fs.writeFileSync(lock, String(process.pid), { flag: 'wx' });
+      return () => {
+        try {
+          if (fs.readFileSync(lock, 'utf8').trim() === String(process.pid)) fs.rmSync(lock, { force: true });
+        } catch {
+          // 鎖檔已經不在。
+        }
+      };
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+    }
+    let pid = NaN;
+    let age = 0;
+    try {
+      pid = Number(fs.readFileSync(lock, 'utf8').trim());
+      age = Date.now() - fs.statSync(lock).mtimeMs;
+    } catch {
+      continue; // 鎖剛好被放掉了。
+    }
+    if (pid !== process.pid && pidAlive(pid) && age < WAIT_LOCK_MAX_AGE_MS) {
+      throw new ProtocolError(`同名已有另一個 wait 在執行，先讀完它的輸出（pid ${pid}）`);
+    }
+    fs.rmSync(lock, { force: true });
+  }
+  throw new ProtocolError('同名已有另一個 wait 在執行，先讀完它的輸出');
 }
 
 function webhookFile(channelId) {
@@ -145,6 +192,7 @@ export function newAgent({ name, vendor = null, model = null, channelId, cursor 
     lastProgressAt: null,
     workStartedAt: null,
     emptyWaitSince: null,
+    lastNotes: [],
     left: false,
   };
 }

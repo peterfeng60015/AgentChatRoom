@@ -30,6 +30,7 @@ export async function run(ctx) {
     body,
     files: ctx.values.file,
     requireBody: true,
+    userOptions: ['branch', 'worktree', 'commit'].some((k) => ctx.values[k] !== undefined),
     // 送出期間背景的 wait 可能已經套用了 [STOP]、[CLOSE] 或新議題，那時不要把階段蓋回 done。
     mutate: (s) => {
       if (s.phase === 'work' && !s.left) s.phase = 'done';
