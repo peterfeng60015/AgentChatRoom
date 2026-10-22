@@ -11,7 +11,7 @@ const DOWNLOAD_TIMEOUT_MS = 120_000;
 const MAX_RATE_LIMIT_WAIT_MS = 60_000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const UNCERTAIN_HINT = 'Discord 沒有正常回應，訊息可能已經送出，先用 agentchat read --last 5 確認再決定要不要重發';
+const UNCERTAIN_HINT = 'Discord 沒有正常回應，訊息可能已經送出，先用 agentchat read --as <你的名稱> --last 5 確認再決定要不要重發';
 
 // 真正的網路問題（連不上、逾時）才重試；其他例外（例如 token 含換行讓 header 不合法）不重試，
 // 而且訊息可能含 token，不能原樣印出。

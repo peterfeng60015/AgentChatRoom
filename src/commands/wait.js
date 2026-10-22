@@ -98,7 +98,10 @@ async function waitLocked(ctx, room, initial, timeout, until) {
     const fresh = batch.filter((m) => !s.cursor || compareSnowflake(m.id, s.cursor) > 0);
     ({ notes } = applyEach(s, fresh, room));
     // §5.1：注意存進 lastNotes，status 可以再印一次；沒有新的就保留上一次。
-    if (notes.length) s.lastNotes = notes;
+    if (notes.length) {
+      s.lastNotes = notes;
+      s.lastNotesAt = new Date().toISOString();
+    }
     if (!s.cursor || compareSnowflake(newCursor, s.cursor) > 0) s.cursor = newCursor;
   });
   if (batch.length) {
@@ -131,7 +134,7 @@ async function waitLocked(ctx, room, initial, timeout, until) {
     matched: `狀態：符合條件（${reason}）`,
     timeout: others ? `狀態：逾時，有 ${others} 則其他新訊息` : '狀態：逾時，沒有新訊息',
     idle: '狀態：已自動發出 [IDLE]',
-    partial: `狀態：還有未讀，先處理這 ${MAX_BATCH} 則，再執行 agentchat wait --timeout 0`,
+    partial: `狀態：還有未讀，先處理這 ${MAX_BATCH} 則，再執行 agentchat wait --as ${updated.name} --timeout 0`,
   }[status];
   const rem = reminders(updated, room);
   // 注意與提醒放在訊息前面：輸出很長時，agent 的工具常只顯示開頭。

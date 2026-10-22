@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { BIN, setup, webhookMessages } from './helpers.js';
 import { createClient } from '../../src/discord.js';
 import { DiscordError } from '../../src/errors.js';
+import { normalize } from '../../src/protocol.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const webhookPosts = (mock) => mock.requests.filter((q) => q.method === 'POST' && q.path.startsWith('/api/v10/webhooks/'));
@@ -174,7 +175,7 @@ describe('CLI 與指令層的修正', () => {
     env.mock.fail({ method: 'POST', path: /^\/webhooks\//, status: 500 });
     r = await env.run(['post', '--as', 'claude-1', '短訊息']);
     assert.equal(r.code, 1);
-    assert.match(r.stderr, /可能已經送出，先用 agentchat read --last 5 確認/);
+    assert.match(r.stderr, /可能已經送出，先用 agentchat read --as <你的名稱> --last 5 確認/);
     assert.equal(webhookPosts(env.mock).length - before, 1, '只送一次，不重試');
   });
 
@@ -201,7 +202,7 @@ describe('CLI 與指令層的修正', () => {
     await sleep(600);
     const second = await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
     assert.equal(second.code, 3);
-    assert.match(second.stderr, /同名已有另一個 wait 在執行，先讀完它的輸出/);
+    assert.match(second.stderr, /同名已有另一個 wait 在執行（pid \d+，\d\d\/\d\d \d\d:\d\d:\d\d 開始），先讀完它的輸出/);
     assert.equal((await first).code, 0);
 
     const lock = path.join(env.stateDir, 'agents', env.room.channelId, 'claude-1.wait.lock');
@@ -228,7 +229,7 @@ describe('CLI 與指令層的修正', () => {
     assert.ok(r.stdout.indexOf('注意') < r.stdout.indexOf('│ '), r.stdout);
     for (let i = 0; i < 55; i++) env.mock.addMessage({ author: 'human', content: `再 ${i}` });
     r = await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
-    assert.match(r.stdout, /^狀態：還有未讀，先處理這 50 則，再執行 agentchat wait --timeout 0/);
+    assert.match(r.stdout, /^狀態：還有未讀，先處理這 50 則，再執行 agentchat wait --as claude-1 --timeout 0/);
   });
 
   test('join：空頻道游標是 0；讀不到歷史（權限不足）時改用頻道的 last_message_id', async () => {
@@ -322,6 +323,16 @@ describe('CLI 與指令層的修正', () => {
     assert.equal(env.readState('claude-1').pendingQuestionId, q.id);
   });
 
+  test('normalize：系統訊息（type 6 釘選）帶 message_reference 也不算回覆', () => {
+    const room = { moderatorUserId: '9' };
+    const self = { name: 'claude-1', ownMessageIds: ['5'], pendingQuestionId: '5' };
+    const pin = normalize({ id: '7', type: 6, content: '', author: { id: '9' }, message_reference: { message_id: '5' } }, room, self);
+    assert.equal(pin.replyTo, null);
+    assert.equal(pin.mentionsMe, false);
+    const reply = normalize({ id: '8', type: 19, content: 'x', author: { id: '9' }, message_reference: { message_id: '5' } }, room, self);
+    assert.equal(reply.replyTo, '5');
+  });
+
   test('wait 等待中另外 ask，主導者回覆那則提問會讓 wait 提早結束', async () => {
     await env.join('claude-1');
     const t0 = Date.now();
@@ -385,18 +396,55 @@ describe('CLI 與指令層的修正', () => {
     assert.match(r.stdout, /語言：zh-TW/);
     assert.match(r.stdout, /作業 repo：\/tmp\/app/);
     assert.match(r.stdout, /base：dev/);
-    assert.match(r.stdout, /最近一次的注意\n- 你被指派/, '沒有新注意的 wait 保留上一次的');
+    assert.match(r.stdout, /最近一次的注意（\d\d\/\d\d \d\d:\d\d:\d\d）\n- 你被指派/, '沒有新注意的 wait 保留上一次的');
     const out = (await env.run(['status', '--as', 'claude-1', '--json'])).json();
     assert.equal(out.language, 'zh-TW');
     assert.equal(out.repo, '/tmp/app');
     assert.equal(out.base, 'dev');
   });
 
+  test('join 先檢查頻道：不屬於 guildId、討論串、找不到 → 2，不建 webhook、不發 [JOIN]', async () => {
+    for (const mock of [{ channelGuildId: '999' }, { channelType: 11 }]) {
+      await env.close();
+      env = await setup({ mock });
+      const r = await env.run(['join', '--as', 'claude-1', '--vendor', 'claude']);
+      assert.equal(r.code, 2, JSON.stringify(mock));
+      assert.equal(env.mock.webhooks.length, 0);
+      assert.equal(env.mock.messages.length, 0);
+    }
+    await env.close();
+    env = await setup({ room: { channelId: '999999999999999999' } });
+    assert.equal((await env.run(['join', '--as', 'claude-1', '--vendor', 'claude'])).code, 2);
+  });
+
+  test('join 印生效的語言；--resume 第一行之後印和 status 相同的內容', async () => {
+    const r = await env.run(['join', '--as', 'claude-1', '--vendor', 'claude']);
+    assert.match(r.stdout, /\n語言：zh-TW\n/);
+    const resume = await env.run(['join', '--as', 'claude-1', '--vendor', 'claude', '--resume']);
+    const status = await env.run(['status', '--as', 'claude-1']);
+    const lines = resume.stdout.split('\n');
+    assert.equal(lines[0], '重新連線：接手既有身分 claude-1，沒有發 [JOIN]');
+    assert.equal(lines.slice(1).join('\n'), status.stdout);
+  });
+
+  test('提示下一步的指令都是完整可執行的形式（帶 --as，wait 帶 --timeout）', async () => {
+    await env.join('claude-1');
+    env.mock.addMessage({ content: '[TOPIC] t' });
+    env.mock.addMessage({ content: '[ASSIGN] @claude-1\nrole: 前端' });
+    const r = await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    const hints = r.stdout.match(/agentchat [a-z]+[^\n。，；]*/g) || [];
+    assert.ok(hints.length >= 2, r.stdout);
+    for (const h of hints) {
+      assert.match(h, /--as claude-1/, h);
+      if (h.startsWith('agentchat wait')) assert.match(h, /--timeout \d+/, h);
+    }
+  });
+
   test('未讀超過抓取上限時標成 N+', async () => {
     await env.join('claude-1');
     for (let i = 0; i < 520; i++) env.mock.addMessage({ author: 'human', content: `m${i}` });
     const r = await env.run(['post', '--as', 'claude-1', 'hi']);
-    assert.match(r.stdout, /未讀：\d{3}\+ 則，先用 agentchat wait --timeout 0 讀取/);
+    assert.match(r.stdout, /未讀：\d{3}\+ 則，先用 agentchat wait --as claude-1 --timeout 0 讀取/);
   });
 });
 
@@ -490,6 +538,7 @@ describe('設定檔與協定的修正', () => {
     assert.equal((await env.run(['post', '--as', 'claude-1', `\`\`\`npm test\`\`\`\n${'x'.repeat(2500)}`])).code, 0);
     parts = env.mock.executions.slice(skip).map((e) => e.payload.content);
     assert.equal(parts.join('').split('npm test').length - 1, 1, '同一行開又關的 fence 不會被重複');
+    assert.ok(parts.every((p) => !p.split('\n').includes('```')), '不該把它當成 fence 開頭而在段落兩邊補 ```');
   });
 });
 

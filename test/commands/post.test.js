@@ -220,7 +220,7 @@ describe('post 與發文共通處理', () => {
     assert.equal(r.code, 0, r.stderr);
     assert.equal(r.json().unread, 1);
     const t = await env.run(['post', '--as', 'claude-1', 'hi again']);
-    assert.match(t.stdout, /未讀：1 則，先用 agentchat wait --timeout 0 讀取/);
+    assert.match(t.stdout, /未讀：1 則，先用 agentchat wait --as claude-1 --timeout 0 讀取/);
   });
 
   test('還沒 join → 結束碼 2；leave 之後不能再發言 → 結束碼 3', async () => {
@@ -317,7 +317,7 @@ describe('discuss、ack、ask、progress、done 的階段與欄位', () => {
     assert.deepEqual(ex.payload.allowed_mentions.users, [mod]);
     assert.deepEqual(env.mock.lastMessage().mentions, [{ id: mod }], '假 Discord 依 allowed_mentions 算出會通知主導者');
     assert.equal(env.readState('claude-1').pendingQuestionId, ex.id);
-    assert.match(r.stdout, /接著用 wait --until mention 等主導者回答/);
+    assert.match(r.stdout, /接著用 agentchat wait --as claude-1 --until mention --timeout 2 等主導者回答/);
   });
 
   test('ask：內文自帶 [QUESTION] 標籤列時補上主導者 mention；closed 階段不能問', async () => {
