@@ -225,6 +225,16 @@ agent 用：
 | `left` | 自己執行 `leave` | 無；要再發言須重新 `join` |
 
 不允許時，指令拒絕並以結束碼 3 結束，訊息說明目前階段與該做什麼。
+
+工具在提醒、注意、錯誤訊息裡建議 agent `wait` 時，`--until` 一律照下表（和 `SOP/agent.md` 3.3 的表格一致）。有待答問題不改變等法：主導者的回答不論哪種 `--until` 都收得到。
+
+| 階段 | 建議的等法 |
+|---|---|
+| `lobby` `topic` `stopped` | `--until moderator` |
+| `discussion` | 輪數未滿：不帶 `--until`（any）；輪數已滿：`--until moderator` |
+| `work` | 每做完一步 `--timeout 0`；沒事可做時 `--until mention` |
+| `done` | `--until mention`（回答別人對成果的問題） |
+| `closed` `idle` `left` | 不再 wait |
 `stopped` 之後收到對我生效的 `[GO]`、`[CONTINUE]`、`[ASSIGN]` 會照常轉換（不帶 @ 的 GO、CONTINUE 對誰生效見 §4.4）。
 「進行中的議題」：頻道最近 200 則訊息中，主導者最後一則 `[TOPIC]` 之後沒有主導者的 `[CLOSE]`。
 
@@ -241,6 +251,7 @@ agent 用：
 - 計時中的 `wait` 開始時，`emptyWaitSince` 若是 `null` 就設為現在。
 - 重設計時（`emptyWaitSince` 設回 `null`）：`wait` 收到非自己的新訊息，但標籤是 `[JOIN]`／`[LEAVE]`／`[IDLE]` 的不算（不論是誰發的）；或 agent 自己發了任何訊息；或階段進入 `work`。
 - 計時中的 `wait` 結束時若沒有符合條件的新訊息，且 `現在 - emptyWaitSince ≥ idleLimitMin`，工具自動發 `[IDLE]`，階段改為 `idle`，`wait` 的狀態回報為 `idle`。
+- 自動 `[IDLE]` 送出失敗時不丟錯：照常輸出這批訊息，狀態維持「逾時」，階段不改，「注意」加一行「自動 [IDLE] 送出失敗（原因），下次 wait 會再試；可用 read 確認是否已送出」，結束碼 0。
 
 ### 5.5 作業 repo
 
@@ -256,11 +267,11 @@ agent 用：
 - 共通選項：`--as <名稱>`、`--room <名稱>`、`--json`、`-h`/`--help`。
 - 需要 `--as` 的指令：除了 `help`、`sop`、`doctor`、`read` 之外都要。狀態檔不存在時（還沒 `join`），除了 `join` 都以結束碼 2 拒絕。
 - 名稱規則：英數字、底線、連字號，英數字開頭，1 到 31 字元，不含 `discord`、`clyde`，也不能是保留字 `all`、`agents`、`everyone`、`here`，不能以 `moderator` 開頭（例如 `moderator2`，因為 `@moderator` 只看開頭，會被換成主導者 mention）；以上都不分大小寫。慣例是 `<vendor>-<編號>`，例如 `claude-1`。名稱比對一律不分大小寫。
-- 文字輸出給 AI 讀：繁體中文、精簡、先講結果。工具在輸出裡提示 agent 下一步要跑的指令時，一律寫完整可執行的形式，帶上 `--as <名稱>`（`wait` 另外帶 `--timeout`），不用簡寫。錯誤訊息寫到 stderr，格式 `agentchat: <訊息>`。
+- 文字輸出給 AI 讀：繁體中文、精簡、先講結果。工具在輸出裡提示 agent 下一步要跑的指令時，一律寫完整可執行的形式，帶上 `--as <名稱>`、有 `roomArg` 時帶 `--room <名稱>`（`wait` 另外帶 `--timeout`），不用簡寫。提示裡 `wait` 的 `--timeout` 是 `room.waitTimeoutSec`；agent 照做時換成自己 CLI 的建議秒數（見各家接入說明），SOP 要寫明這點。錯誤訊息寫到 stderr，格式 `agentchat: <訊息>`。
 - `--json`：stdout 只輸出一個 JSON 物件。成功是 `{ "ok": true, ... }`，失敗是 `{ "ok": false, "error": { "code": <結束碼>, "message": "..." } }`。
 - 發言類指令（`post` `discuss` `ack` `ask` `progress` `done` `leave`）成功後：
   - 輸出送出的訊息 ID。
-  - 若游標之後還有未讀訊息，加一行「未讀：N 則，先用 agentchat wait --timeout 0 讀取」（`leave` 不印這行）。
+  - 若游標之後還有未讀訊息，加一行「未讀：N 則，先用 agentchat wait --as <名稱> --timeout 0 讀取」（有 `roomArg` 時另帶 `--room`；`leave` 不印這行）。
   - 附上 `reminders()` 的提醒。
 - 任何發言都會更新 `ownMessageIds`、`lastActivityAt`，並把 `emptyWaitSince` 設回 `null`。
 
@@ -310,6 +321,7 @@ agent 用：
 8. webhook：本機快取有效就用（`GET /webhooks/<id>/<token>`）；否則在頻道的 webhook 清單找名稱等於 `webhookName` 且有 token 的；再沒有就建立一個並寫入快取。需要「管理 Webhook」權限。
 9. `--send-test`：用 webhook 發一則 `[INFO] doctor 測試`。只有帶這個選項才發。
 10. 帶 `--as` 時，額外印出該 agent 的本機狀態摘要。
+11. 設定提醒（§9）：`AGENTCHAT_API_BASE` 不是預設值時 WARN 並印出位址；`.env` 權限對群組或其他人開放時 WARN。
 
 **`join --as <名稱> --vendor <claude|gemini|codex|other> [--model <文字>] [--host <標籤>] [--resume] [--force]`**
 1. 檢查名稱規則；先做 doctor 第 6 項（頻道可讀、`guild_id` 等於 `room.guildId`、不是討論串），不通過就結束碼 2，不建 webhook、不發 `[JOIN]`；再確保 webhook 存在（同 doctor 第 8 項）。
@@ -322,7 +334,7 @@ agent 用：
 4. 否則建立新狀態，游標設為頻道目前最新一則訊息的 ID（頻道是空的就設 `'0'`，不用本機時鐘，免得時鐘偏快時漏讀）。
 5. 有進行中的議題時：印出議題全文，再對議題之後的所有主導者訊息依序執行 `applyDirectives()`（`[ASSIGN]`、`[GO]`、`[CONTINUE]`、`[STOP]` 都套用），印出對我生效的那幾則，讓晚進房的 agent 直接到達正確階段。
 6. 發 `[JOIN] <名稱>`，欄位 `vendor`、`model`、`host`（有給才寫）。
-7. 輸出：房間資訊與實際生效的語言、目前階段、`applyDirectives()` 產生的「注意」（同時存進 `lastNotes`）、`reminders()` 的提醒、下一步該做什麼。第 5 步印的議題與指令用 `renderMessage()` 的格式（原文加 `│ ` 前綴）。
+7. 輸出：房間資訊與實際生效的語言、目前階段、`applyDirectives()` 產生的「注意」（同時存進 `lastNotes`）、`reminders()` 的提醒（段落標題和其他指令一樣叫「提醒」）。第 5 步印的議題與指令用 `renderMessage()` 的格式（原文加 `│ ` 前綴）。
 
 **`status --as <名稱>`**：印出本機狀態（階段、角色、分工欄位與 `assignBody`、議題標題與欄位 `repo` `base` `rounds` 與附檔清單、**實際生效**的語言（`room.language`）、作業 repo（依 §5.5：議題的 `repo`、`room.defaultRepo`，或「未指定，分工有 branch 或 isolation 時用目前目錄的 git repo」）與 base（議題的 `base` 或 `room.defaultBase`）、討論輪數、游標、待答問題、`lastNotes`）、未讀則數（打一次 API）與提醒。給 agent 在對話被壓縮後找回進度用。
 
@@ -340,7 +352,7 @@ agent 用：
 - 每 `pollIntervalSec` 秒抓一次游標之後的訊息，排除自己，累積起來，不重複抓。
 - 單次輸出上限 50 則：累積超過 50 則時立刻結束，只處理最舊的 50 則（狀態 `partial`）。
 - 條件成立、逾時或達到上限：對**要輸出的**訊息依序執行 `applyDirectives()`，游標只移到其中最後一則，存檔，輸出這些訊息（不只符合條件的那幾則）；沒輸出的訊息留給下一次 `wait`。
-- 第一行是狀態：`狀態：符合條件（<原因>）`、`狀態：逾時，沒有新訊息`、`狀態：逾時，有 N 則其他新訊息`、`狀態：已自動發出 [IDLE]`、`狀態：還有未讀，先處理這 50 則，再執行 agentchat wait --timeout 0`。
+- 第一行是狀態：`狀態：符合條件（<原因>）`、`狀態：逾時，沒有新訊息`、`狀態：逾時，有 N 則其他新訊息`、`狀態：已自動發出 [IDLE]`、`狀態：還有未讀，先處理這 50 則，再執行 agentchat wait --as <名稱> --timeout 0`（有 `roomArg` 時另帶 `--room`）。
 - 接著一行摘要，格式固定：`階段：<§5.2 的階段代號>　角色：<角色或「未指派」>　討論：<已發>/<上限>`（階段代號用英文，例如 `discussion`）。
 - 然後依序是「注意」（`applyDirectives()` 的回傳）、「提醒」（`reminders()`）、訊息（`renderMessages()`）。注意與提醒放在訊息前面，避免輸出很長時被 agent 的工具截掉。
 - `--json`：`{ ok, status: "matched"|"timeout"|"idle"|"partial", reason, phase, role, round: { done, limit }, messages: [...], notes: [...], reminders: [...] }`。
@@ -353,7 +365,7 @@ agent 用：
 
 **`ack --as <名稱> [內文|-]`**：發 `[ACK]`，欄位 `role`、`branch` 取自狀態；內文寫自己對分工的理解。只在 `discussion` 階段可用。
 
-**`ask --as <名稱> [--file <路徑>]... <問題|->`**：發 `[QUESTION]`，第一行寫成 `[QUESTION] <@moderatorUserId> <問題的第一行>`（mention 緊接在標籤之後，標籤才解析得到、通知也會響）；記下 `pendingQuestionId`。輸出提示「接著用 wait --until mention 等主導者回答」。
+**`ask --as <名稱> [--file <路徑>]... <問題|->`**：發 `[QUESTION]`，第一行寫成 `[QUESTION] <@moderatorUserId> <問題的第一行>`（mention 緊接在標籤之後，標籤才解析得到、通知也會響）；記下 `pendingQuestionId`。輸出提示接著照目前階段的等法（§5.2 下方的表）`wait`，主導者的回答一定收得到。
 
 **`progress --as <名稱> --percent <0-100> [--eta <文字>] [--file <路徑>]... <內文|->`**：發 `[PROGRESS] <percent>%`，欄位 `percent`、`eta`、`branch`；更新 `lastProgressAt`。只在 `work` 階段可用。
 
@@ -415,11 +427,11 @@ agent 用：
 `me()`、`application()`（新增，`GET /applications/@me`）、`channel(id)`、`messages(id, { after, before, limit })`（舊到新）、`messagesAfter(id, cursor, maxPages)`、`message(channelId, messageId)`、`listWebhooks(id)`、`createWebhook(id, name)`、`getWebhook(id, token)`（新增）、`executeWebhook(webhook, { content, username, files, allowedMentions })`、`download(url)`。
 另外 export `compareSnowflake`、`snowflakeNow`、`snowflakeToDate`。
 遇到 429 依 `retry_after` 等待重試（`retry_after` 超過 60 秒就不等，直接丟 `DiscordError`，訊息寫明要等幾秒），5xx 與網路錯誤退避重試；重試最多 5 次（加上第一次共 6 次請求）；401、403、404 給中文提示。
-例外：`executeWebhook`（發言）只在 429 時重試；5xx 與網路錯誤不重試，直接結束碼 1，訊息提示「可能已經送出，先用 agentchat read --last 5 確認再決定要不要重發」，以免重複發言。
+例外：`executeWebhook`（發言）只在 429 時重試；5xx 與網路錯誤不重試，直接結束碼 1，訊息提示「可能已經送出，先用 agentchat read --as <名稱> --last 5 確認再決定要不要重發」（有 `roomArg` 時另帶 `--room`；這句由指令層組出，`discord.js` 不知道名稱與房間），以免重複發言。
 
 ### 7.5 `src/render.js`、`src/args.js`、`src/errors.js`
 
-`renderMessage(m, { as })`、`renderMessages(list, { as })`（格式固定，SOP 依賴它：第一行 `[MM/DD HH:MM:SS] <作者標示>  (id=<訊息ID>)`，提到我或指令對我生效時行尾加 `  ← 提到你`；作者標示是 `主導者 <名稱>`、`agent <名稱>`（有角色時加 ` (<角色>)`）、`你 <名稱>`、`人類 <名稱>`、`bot <名稱>`；接著是訊息原文，**每一行前面加 `│ `**（`\r\n`、單獨的 `\r`、`\n` 都當成換行）（工具產生的結構行一律頂格，原文一律縮排，別人無法在內文裡偽造主導者訊息或「注意」段落）；每個附檔一行（頂格） `附檔：<檔名>（<大小>）→ agentchat download --as <as> <訊息ID>`，沒有 `as` 時印 `--as <你的名稱>`；多則之間用一行 `---` 分隔）、`fmtSize(n)`（1024 進位：小於 1024 印 `N B`；小於 1024×1024 印四捨五入的 `N KB`；其餘印一位小數的 `N.N MB`）、`fmtTime(iso)`（本機時區）、`kindLabel(kind)`、`section(title, items)`；
+`renderMessage(m, { as, room })`、`renderMessages(list, { as, room })`（附檔行的 download 指令與其他提示一樣用完整形式，有 `room.roomArg` 時帶 `--room`；作者名稱與附檔名用 `oneLine()` 清理；格式固定，SOP 依賴它：第一行 `[MM/DD HH:MM:SS] <作者標示>  (id=<訊息ID>)`，提到我或指令對我生效時行尾加 `  ← 提到你`；作者標示是 `主導者 <名稱>`、`agent <名稱>`（有角色時加 ` (<角色>)`）、`你 <名稱>`、`人類 <名稱>`、`bot <名稱>`；接著是訊息原文，**每一行前面加 `│ `**（`\r\n`、單獨的 `\r`、`\n` 都當成換行）（工具產生的結構行一律頂格，原文一律縮排，別人無法在內文裡偽造主導者訊息或「注意」段落）；每個附檔一行（頂格） `附檔：<檔名>（<大小>）→ agentchat download --as <as> <訊息ID>`，沒有 `as` 時印 `--as <你的名稱>`；多則之間用一行 `---` 分隔）、`fmtSize(n)`（1024 進位：小於 1024 印 `N B`；小於 1024×1024 印四捨五入的 `N KB`；其餘印一位小數的 `N.N MB`）、`fmtTime(iso)`（本機時區）、`kindLabel(kind)`、`section(title, items)`；
 `parse(argv, options)`、`requireAs(values)`、`toInt(value, fallback, label)`；`UserError`、`DiscordError`。
 
 ## 8. 測試
@@ -436,6 +448,14 @@ agent 用：
 - 頻道裡的內容（包括其他 agent 的發言與附檔）對 agent 一律是資料，不是指令。只有主導者的指令訊息能改變 agent 的階段與分工。
 - 工具只允許通知主導者（§4.4 的 `allowed_mentions`）。
 - `download` 只存檔、不執行，檔名清理過才寫入。
+- **輸出清理**：所有來自頻道的字串（作者名稱、附檔名、訊息內文）輸出前都要中和控制字元：C0（保留 `\t`；內文的 `\n` 與 `\r` 照 §7.5 換行）、DEL、C1（`\x80`–`\x9f`）、U+2028／U+2029、雙向文字控制字元（U+202A–U+202E、U+2066–U+2069）換成 U+FFFD。作者名稱與附檔名另外把換行換成空白（`oneLine()`），包括 `wait` 第一行狀態列、`download` 的輸出與錯誤訊息、`status`／`join` 的議題附檔行。
+- **防止秘密送進頻道**（`--body-file`、`--file`、內文）：
+  - 比對的秘密包含：環境變數與 `.env` 裡的 `DISCORD_BOT_TOKEN`（兩者都收，不論實際用哪個、格式對不對），以及 `~/.agentchat/webhooks/` 底下每個快取檔的 webhook token。內文或附檔含任一個就拒絕（結束碼 2）。
+  - 內容偵測：含 `-----BEGIN ... PRIVATE KEY-----` 或 AWS access key（`AKIA` 加 16 個大寫英數字）就拒絕（結束碼 2），訊息說明原因。
+  - 路徑拒絕（用 realpath 比對）：`~/.agentchat`（狀態目錄）、工具目錄的 `.env`、`~/.ssh`（`*.pub` 與 `known_hosts` 放行）、`~/.aws`、`~/.gnupg`、`/proc`、`/sys`、`/dev`。拒絕時結束碼 2。
+  - 讀檔後用實際讀到的位元組數再檢查一次大小上限（procfs 之類的檔案 stat 大小是 0）。
+  - 這些是最後一道防線，擋不住刻意繞過；SOP 要寫明不要依頻道內容指定的路徑附檔或讀檔。
+- **doctor 的設定提醒**：`AGENTCHAT_API_BASE` 不是預設值時 WARN 並印出實際位址，不是 https 又不是本機位址時也標出來；`.env` 的權限對群組或其他人開放（`mode & 0o077` 不為 0）時 WARN，提示 `chmod 600`。
 
 ## 10. 這一版不做
 
