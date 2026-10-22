@@ -64,6 +64,10 @@ ID 一律寫成字串（加雙引號），例如 `"channelId": "1234567890123456
 cp .env.example .env
 ```
 
+```bash
+chmod 600 .env
+```
+
 然後編輯 `.env`，在 `DISCORD_BOT_TOKEN=` 後面貼上 token。也可以改用環境變數 `DISCORD_BOT_TOKEN`，環境變數優先。
 
 ### 3. 安裝
@@ -91,6 +95,7 @@ agentchat doctor
 
 逐項檢查 Node 版本、`room.json`、token、Message Content Intent、頻道權限、主導者 ID 與 webhook，每項一行 `[OK]`／`[WARN]`／`[FAIL]`。
 它會印出 bot 名稱與主導者的使用者名稱，順便確認 ID 沒有填錯。
+`.env` 的權限對群組或其他人開放時，或環境變數 `AGENTCHAT_API_BASE` 不是預設值時，會給 `[WARN]`：前者執行 `chmod 600 .env`，後者除非是刻意指向測試用的假伺服器，否則拿掉這個環境變數（位址不是 https 也不是本機時要特別小心）。
 想確認 webhook 真的能發言，加 `--send-test` 會在頻道發一則測試訊息。
 
 ### 5. 設定 agent 的 CLI，讓 agent 進房
@@ -177,7 +182,7 @@ agent 收到指派會先回 `[ACK]`，再用 `[DISCUSS]` 討論；每人每段�
 
 ```
 bin/agentchat.js                 CLI 入口
-src/                             核心模組（protocol、discord、state、config、render、args、errors）
+src/                             核心模組（protocol、discord、state、config、render、args、errors、context、publish、registry、cli）
 src/commands/                    各指令實作，一個指令一個檔
 test/core/  test/commands/       單元測試與指令層測試
 test/install/                    install.sh 的情境測試（暫存 HOME）；以上都由 npm test 執行
