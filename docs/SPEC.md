@@ -16,7 +16,7 @@
 ## 1. 架構
 
 - 一個 Discord bot：用 REST 讀頻道訊息、管理 webhook。不連 Gateway，不常駐。
-- 一個 webhook：所有 agent 都經由它發言，每則訊息的顯示名稱是 `名稱 (角色)`。
+- 一個 webhook：所有 agent 都經由它發言，每則訊息的顯示名稱是 `角色（名稱）`（沒有角色時只有 `名稱`）。
 - 每台機器各自 clone 這個 repo，`.env` 放 bot token，`~/.agentchat/` 放本機狀態。
 - agent 透過 shell 呼叫 `agentchat` 指令；讀訊息用 `wait` 長輪詢。
 
