@@ -3,6 +3,9 @@ import { ENV_FILE, findToken, loadRoom } from '../config.js';
 import { DEFAULT_API_BASE, createClient } from '../discord.js';
 import { DiscordError } from '../errors.js';
 import { validateAgentName } from '../protocol.js';
+
+// doctor 不需要 --as；非預設房間帶 --room。
+const readText = (room) => `agentchat read${room?.roomArg ? ` --room ${room.roomArg}` : ''} --last 5`;
 import { loadAgent } from '../state.js';
 import { WEBHOOK_SOURCE_TEXT, ensureWebhook, summaryLine } from '../context.js';
 
@@ -60,7 +63,13 @@ export async function run(ctx) {
   let webhook = null;
   let skipped = false;
   if (room && token) {
-    const client = createClient(token);
+    // AGENTCHAT_API_BASE 不是合法網址時 createClient 會丟錯：記成 FAIL，略過 Discord 檢查，其餘項目照做。
+    let client = null;
+    try {
+      client = createClient(token);
+    } catch (e) {
+      fail('API 位址', e.message, true);
+    }
     const step = async (item, fn) => {
       try {
         await fn();
@@ -71,11 +80,12 @@ export async function run(ctx) {
       }
     };
 
+    if (!client) skipped = true;
     // 4. token 有效
-    const meOk = await step('bot 身分', async () => {
+    const meOk = client && (await step('bot 身分', async () => {
       const me = await client.me();
       add('OK', 'bot 身分', `${me.username}${me.discriminator && me.discriminator !== '0' ? `#${me.discriminator}` : ''}（id=${me.id}）`);
-    });
+    }));
 
     if (meOk) {
       // 5. Message Content Intent
@@ -156,11 +166,13 @@ export async function run(ctx) {
           await step('測試訊息', async () => {
             // 不用 agent 的名稱發：否則還沒 join 的名稱會因為這則測試訊息被 join 判成「24 小時內有人用過」。
             const username = `${room.webhookName}-doctor`;
-            const msg = await client.executeWebhook(webhook, {
-              content: '[INFO] doctor 測試',
-              username,
-              allowedMentions: { parse: [] },
-            });
+            let msg;
+            try {
+              msg = await client.executeWebhook(webhook, { content: '[INFO] doctor 測試', username, allowedMentions: { parse: [] } });
+            } catch (e) {
+              if (e.uncertain) e.message += `，測試訊息可能已經送出，可用 ${readText(room)} 確認`;
+              throw e;
+            }
             add('OK', '測試訊息', `已送出（id=${msg.id}）`);
           });
         }

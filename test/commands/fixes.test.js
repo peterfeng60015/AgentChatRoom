@@ -651,6 +651,60 @@ try { const rel = acquireWaitLock(${JSON.stringify(env.room.channelId)}, 'claude
     assert.ok(!r.stderr.includes('保留字'));
   });
 
+  test('路徑檢查不分大小寫（macOS）：~/.SSH、~/.AWS 也擋；下載目錄被擋時訊息說明要先複製', async () => {
+    await env.join('claude-1');
+    const home = path.join(env.root, 'user');
+    fs.mkdirSync(path.join(home, '.ssh'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.ssh', 'id_ed25519'), 'secret');
+    if (process.platform === 'darwin' || process.platform === 'win32') {
+      assert.equal((await env.run(['post', '--as', 'claude-1', '--file', path.join(home, '.SSH', 'id_ed25519'), 'x'])).code, 2);
+      assert.equal((await env.run(['post', '--as', 'claude-1', '--file', path.join(home, '.AWS', 'credentials'), 'x'])).code, 2);
+    }
+    const msg = env.mock.addMessage({ content: 'x', attachments: [{ filename: 'a.txt', data: 'hello' }] });
+    const d = (await env.run(['download', '--as', 'claude-1', msg.id, '--json'])).json();
+    const r = await env.run(['post', '--as', 'claude-1', '--file', d.files[0].path, '轉傳']);
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /請先複製到其他目錄/);
+    assert.ok(!r.stderr.includes('含 webhook token'));
+  });
+
+  test('PGP 私鑰區塊也擋；work 階段的等法兩種都寫出來', async () => {
+    await env.join('claude-1');
+    const r = await env.run(['post', '--as', 'claude-1', '金鑰：-----BEGIN PGP PRIVATE KEY BLOCK-----']);
+    assert.equal(r.code, 2);
+    env.patchState('claude-1', { phase: 'work', pendingQuestionId: '42' });
+    const out = (await env.run(['status', '--as', 'claude-1', '--json'])).json();
+    const q = out.reminders.find((x) => x.includes('[QUESTION]'));
+    assert.match(q, /agentchat wait --as claude-1 --timeout 0（每做完一步）或 agentchat wait --as claude-1 --until mention --timeout 2（沒事可做時）/);
+  });
+
+  test('--room 時其餘提示也帶 --room：缺少內文、webhook 失效、join 的頻道錯誤', async () => {
+    fs.mkdirSync(path.join(env.home, 'config', 'rooms'));
+    fs.copyFileSync(path.join(env.home, 'config', 'room.json'), path.join(env.home, 'config', 'rooms', 'r2.json'));
+    await env.run(['join', '--as', 'claude-1', '--vendor', 'claude', '--room', 'r2']);
+    env.patchState('claude-1', { phase: 'discussion' });
+    let r = await env.run(['discuss', '--as', 'claude-1', '--room', 'r2']);
+    assert.match(r.stderr, /缺少內文：agentchat discuss --as claude-1 --room r2/);
+    env.mock.fail({ method: 'POST', path: /^\/webhooks\//, status: 401, body: { message: 'Invalid Webhook Token' }, times: 2 });
+    r = await env.run(['post', '--as', 'claude-1', '--room', 'r2', 'x']);
+    assert.match(r.stderr, /webhook 已失效.*請執行 agentchat doctor --room r2 重新取得/);
+    env.mock.config.channelGuildId = '999';
+    r = await env.run(['join', '--as', 'claude-2', '--vendor', 'claude', '--room', 'r2']);
+    assert.match(r.stderr, /agentchat doctor --room r2 可以逐項檢查/);
+  });
+
+  test('doctor：API 位址不是合法網址時照樣逐項列出；--send-test 遇 5xx 說明可能已經送出', async () => {
+    let r = await env.run(['doctor'], { env: { AGENTCHAT_API_BASE: 'not a url' } });
+    assert.equal(r.code, 2);
+    assert.match(r.stdout, /\[FAIL\] API 位址：AGENTCHAT_API_BASE 不是合法網址/);
+    assert.match(r.stdout, /\[OK\] Node/);
+    assert.match(r.stdout, /不是合法網址）/);
+    await env.run(['doctor']);
+    env.mock.fail({ method: 'POST', path: /^\/webhooks\//, status: 500 });
+    r = await env.run(['doctor', '--send-test']);
+    assert.match(r.stdout, /\[FAIL\] 測試訊息：Discord 沒有正常回應（HTTP 500），測試訊息可能已經送出，可用 agentchat read --last 5 確認/);
+  });
+
   test('未讀超過抓取上限時標成 N+', async () => {
     await env.join('claude-1');
     for (let i = 0; i < 520; i++) env.mock.addMessage({ author: 'human', content: `m${i}` });

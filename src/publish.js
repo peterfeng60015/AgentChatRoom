@@ -10,6 +10,7 @@ import {
   phaseError,
   reminders,
   cmdText,
+  doctorText,
   resolveMentions,
   roundLimit,
   waitText,
@@ -234,7 +235,7 @@ function secretValues() {
 }
 
 const SECRET_PATTERNS = [
-  [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/, '私鑰（-----BEGIN … PRIVATE KEY-----）'],
+  [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----/, '私鑰（-----BEGIN … PRIVATE KEY-----）'],
   [/AKIA[0-9A-Z]{16}/, 'AWS access key（AKIA…）'],
 ];
 
@@ -254,16 +255,23 @@ export function guardSecrets(room, text, files) {
   }
 }
 
+// realpathSync.native 會回傳磁碟上的實際大小寫（JS 版的 realpathSync 不會），macOS 的 ~/.SSH 才繞不過。
 function realOrResolved(p) {
   try {
-    return fs.realpathSync(p);
+    return fs.realpathSync.native(p);
   } catch {
     return path.resolve(p);
   }
 }
 
+// macOS 與 Windows 的檔案系統預設不分大小寫：路徑不存在、拿不到實際大小寫時也要擋得住。
+const FOLD_CASE = process.platform === 'darwin' || process.platform === 'win32';
+const fold = (p) => (FOLD_CASE ? p.toLowerCase() : p);
+
 function inside(dir, p) {
-  return p === dir || p.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep);
+  const d = fold(dir);
+  const x = fold(p);
+  return x === d || x.startsWith(d.endsWith(path.sep) ? d : d + path.sep);
 }
 
 // --body-file、--file 的路徑檢查（用 realpath，symlink 繞不過）：狀態目錄、工具目錄的 .env、
@@ -272,10 +280,13 @@ export function checkSecretPath(abs, label) {
   const real = realOrResolved(abs);
   const home = os.homedir();
   const reason = (() => {
-    if (inside(realOrResolved(STATE_DIR), real)) return '是 agentchat 的狀態目錄（含 webhook token）';
-    if (real === realOrResolved(ENV_FILE)) return '是工具目錄的 .env（含 bot token）';
+    if (inside(realOrResolved(STATE_DIR), real)) {
+      return '在 agentchat 的狀態目錄裡（那裡有 webhook token；下載的檔案請先複製到其他目錄再附上）';
+    }
+    if (fold(real) === fold(realOrResolved(ENV_FILE))) return '是工具目錄的 .env（含 bot token）';
     const ssh = realOrResolved(path.join(home, '.ssh'));
-    if (inside(ssh, real) && !(real.endsWith('.pub') || path.basename(real) === 'known_hosts')) return '在 ~/.ssh 裡';
+    const base = fold(path.basename(real));
+    if (inside(ssh, real) && !(base.endsWith('.pub') || base === 'known_hosts')) return '在 ~/.ssh 裡';
     for (const d of ['.aws', '.gnupg']) if (inside(realOrResolved(path.join(home, d)), real)) return `在 ~/${d} 裡`;
     for (const d of ['/proc', '/sys', '/dev']) if (inside(realOrResolved(d), real)) return `在 ${d} 裡`;
     return null;
@@ -312,6 +323,7 @@ export async function sendParts(ctx, { name, role }, parts, files = []) {
     if (e.uncertain) {
       e.message += `，訊息可能已經送出，先用 ${cmdText(name, 'read', '--last 5', ctx.room)} 確認再決定要不要重發`;
     }
+    if (e.needsDoctor) e.message += `，請執行 ${doctorText(ctx.room)} 重新取得`;
     throw e;
   }
   return ids;
@@ -325,7 +337,7 @@ export async function publish(ctx, opts) {
   const state = requireAgent(ctx);
   const body = opts.body ?? '';
   if (opts.requireBody && !(opts.rawBody ?? body)) {
-    throw new UserError(`缺少內文：agentchat ${opts.command} --as ${state.name} <內文|->`);
+    throw new UserError(`缺少內文：${cmdText(state.name, opts.command, '<內文|->', room)}`);
   }
 
   const composed = composeText({ ...opts, body, name: state.name, room });

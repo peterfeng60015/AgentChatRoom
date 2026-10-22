@@ -39,6 +39,10 @@ export function cmdText(name, sub, args = '', room = null) {
   const r = room?.roomArg ? ` --room ${room.roomArg}` : '';
   return `agentchat ${sub} --as ${name}${r}${args ? ` ${args}` : ''}`;
 }
+// doctor 不需要 --as，但非預設房間要帶 --room，照抄才會檢查同一個房間。
+export function doctorText(room) {
+  return `agentchat doctor${room?.roomArg ? ` --room ${room.roomArg}` : ''}`;
+}
 export function waitText(name, room, until) {
   return cmdText(name, 'wait', `${until ? `--until ${until} ` : ''}--timeout ${waitTimeoutOf(room)}`, room);
 }
@@ -55,6 +59,7 @@ export function waitAdvice(state, room) {
     case 'discussion':
       return waitText(state.name, room, (state.discussRound ?? 0) >= roundLimit(state, room) ? 'moderator' : null);
     case 'work':
+      return `${cmdText(state.name, 'wait', '--timeout 0', room)}（每做完一步）或 ${waitText(state.name, room, 'mention')}（沒事可做時）`;
     case 'done':
       return waitText(state.name, room, 'mention');
     default:
