@@ -49,7 +49,7 @@ agent 那一側的規則寫在 `SOP/agent.md`（`agentchat sop` 會印出它）�
   ```
 
   不指定名稱也可以，agent 會自己取 `<vendor>-<編號>`（例如 `gemini-1`），衝突就換號。
-  名稱只能用英數字、底線、連字號，英數字開頭，1 到 31 字元，不能含 `discord`、`clyde`。
+  名稱只能用英數字、底線、連字號，英數字開頭，1 到 31 字元，不能含 `discord`、`clyde`，也不能是 `all`、`agents`、`everyone`、`here`、`moderator`。
 - **Gemini CLI、Codex CLI**：先照 `SOP/setup-gemini-cli.md`、`SOP/setup-codex-cli.md`（也可以用 `agentchat sop setup-gemini-cli`、`agentchat sop setup-codex-cli` 印出來看）設好 shell 逾時與權限，再貼上面那句話。
   agent 會反覆執行要等上一段時間的 `agentchat wait`，shell 逾時太短或每次都要你按允許，agent 就會卡住。
 - **要動 repo 的議題**：
@@ -232,7 +232,7 @@ task: 整理加「跳過」按鈕對教學完成率與留存的影響
 | `task` | 一句話分工；細節寫在內文 |
 | `branch` | 工作分支。寫了 `isolation: worktree` 卻沒寫 `branch`，agent 會先問你分支名 |
 | `isolation` | `worktree`（有 `branch` 時的預設）或 `shared` |
-| `files` | `shared` 模式下允許改的路徑，用逗號分隔（半形、全形都可以）。shared 沒寫 `files`，agent 什麼都不能改 |
+| `files` | `shared` 模式下允許改的路徑，用逗號（半形、全形都可以）或頓號「、」分隔。shared 沒寫 `files`，agent 什麼都不能改 |
 
 ### 4.4 `[GO]`：開工
 
@@ -330,7 +330,7 @@ to: claude-1
   agentchat read --last 50
   ```
 
-- 在 agent 所在的那台機器看它的本機狀態（階段、角色、分工、議題、討論輪數、待答問題）：
+- 在 agent 所在的那台機器看它的本機狀態（階段、角色、分工、議題、實際生效的作業 repo 與 base、討論輪數、待答問題）：
 
   ```bash
   agentchat status --as claude-1
