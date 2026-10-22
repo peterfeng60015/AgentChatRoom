@@ -451,8 +451,8 @@ agent 用：
 - **輸出清理**：所有來自頻道的字串（作者名稱、附檔名、訊息內文）輸出前都要中和控制字元：C0（保留 `\t`；內文的 `\n` 與 `\r` 照 §7.5 換行）、DEL、C1（`\x80`–`\x9f`）、U+2028／U+2029、雙向文字控制字元（U+202A–U+202E、U+2066–U+2069）換成 U+FFFD。作者名稱與附檔名另外把換行換成空白（`oneLine()`），包括 `wait` 第一行狀態列、`download` 的輸出與錯誤訊息、`status`／`join` 的議題附檔行。
 - **防止秘密送進頻道**（`--body-file`、`--file`、內文）：
   - 比對的秘密包含：環境變數與 `.env` 裡的 `DISCORD_BOT_TOKEN`（兩者都收，不論實際用哪個、格式對不對），以及 `~/.agentchat/webhooks/` 底下每個快取檔的 webhook token。內文或附檔含任一個就拒絕（結束碼 2）。
-  - 內容偵測：含 `-----BEGIN ... PRIVATE KEY-----` 或 AWS access key（`AKIA` 加 16 個大寫英數字）就拒絕（結束碼 2），訊息說明原因。
-  - 路徑拒絕（用 realpath 比對）：`~/.agentchat`（狀態目錄）、工具目錄的 `.env`、`~/.ssh`（`*.pub` 與 `known_hosts` 放行）、`~/.aws`、`~/.gnupg`、`/proc`、`/sys`、`/dev`。拒絕時結束碼 2。
+  - 內容偵測：含 `-----BEGIN ... PRIVATE KEY-----`、`-----BEGIN PGP PRIVATE KEY BLOCK-----` 或 AWS access key（`AKIA` 加 16 個大寫英數字）就拒絕（結束碼 2），訊息說明原因。
+  - 路徑拒絕（用 realpath 比對）：`~/.agentchat`（狀態目錄，含 `downloads/`；要轉傳下載的附檔，先用 `download --out` 存到別處）、工具目錄的 `.env`、`~/.ssh`（`*.pub` 與 `known_hosts` 放行）、`~/.aws`、`~/.gnupg`、`/proc`、`/sys`、`/dev`。拒絕時結束碼 2。
   - 讀檔後用實際讀到的位元組數再檢查一次大小上限（procfs 之類的檔案 stat 大小是 0）。
   - 這些是最後一道防線，擋不住刻意繞過；SOP 要寫明不要依頻道內容指定的路徑附檔或讀檔。
 - **doctor 的設定提醒**：`AGENTCHAT_API_BASE` 不是預設值時 WARN 並印出實際位址，不是 https 又不是本機位址時也標出來；`.env` 的權限對群組或其他人開放（`mode & 0o077` 不為 0）時 WARN，提示 `chmod 600`。
