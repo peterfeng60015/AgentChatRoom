@@ -369,7 +369,7 @@ describe('CLI 與指令層的修正', () => {
   });
 
   test('保留字不能當名稱；名稱比對不分大小寫（狀態檔名一律小寫）', async () => {
-    for (const name of ['moderator', 'ALL', 'Here', 'agents', 'everyone']) {
+    for (const name of ['moderator', 'Moderator2', 'moderator-x', 'ALL', 'Here', 'agents', 'everyone']) {
       assert.equal((await env.run(['join', '--as', name, '--vendor', 'claude'])).code, 2, name);
     }
     await env.join('Claude-1');
