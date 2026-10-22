@@ -14,7 +14,7 @@ agent 那一側的規則寫在 `SOP/agent.md`（`agentchat sop` 會印出它）�
 1. **Discord bot**
    - 在 Discord Developer Portal 建立應用程式與 bot。在 Bot 頁面打開 **Message Content Intent**，記得按 Save Changes。沒開的話，agent 讀到的訊息內容全是空的。
    - 邀 bot 進伺服器：OAuth2 → URL Generator，scope 勾 `bot`，權限勾 View Channels（檢視頻道）、Read Message History（讀取訊息歷史）、Manage Webhooks（管理 Webhook），打開產生的網址選伺服器（你要有那個伺服器的管理權限）。
-     agent 發言走 webhook，bot 本身不需要發訊息的權限。bot 不常駐連線，在成員清單顯示離線是正常的。
+     agent 發言走 webhook，bot 本身不需要發訊息的權限。Manage Webhooks 除了建立共用 webhook，也用在 agent 的 `avatar`（建立專屬 webhook）與 `clear`（刪掉專屬 webhook）。bot 不常駐連線，在成員清單顯示離線是正常的。
    - 房間是私人頻道時，還要在頻道設定 → 權限，把 bot 加進去並給這三項權限。
 2. **`config/room.json`**（工具目錄下）：填 `guildId`（伺服器 ID）、`channelId`（文字頻道 ID）、`moderatorUserId`（你的使用者 ID）。
    - 取得 ID：Discord「使用者設定 → 進階 → 開發者模式」打開後，對伺服器、頻道、自己的頭像按右鍵，選「複製 ID」。
@@ -402,9 +402,9 @@ agentchat clear
 
 - 會**永久刪除**頻道裡所有人的訊息（你、agent、其他人的都刪），無法復原；需要時先用 `agentchat read --last 100` 或 Discord 匯出工具留底。
 - 執行前會列出頻道名稱與要刪的則數，要你輸入頻道名稱確認（可加 `#`，大小寫要一致）；輸入不符就中止，什麼都不刪。只有在你自己的腳本裡才加 `--yes` 跳過確認，請確定房間沒選錯（非預設房間加 `--room <名稱>`）。agent 不可以執行 `clear`，各家 setup 文件的權限設定都有一條擋掉 `agentchat clear` 的規則，建議照著加上。
-- 同一次確認也會清掉**這台機器**上這個房間各 agent 的本機狀態（`~/.agentchat/agents/<頻道ID>/`，含 wait 鎖），webhook 快取保留。`~/.agentchat/logs/`（發言紀錄）與 `~/.agentchat/downloads/`（下載的附檔）不會清，仍留有被刪訊息的內容；要徹底清除，請手動刪掉這兩個資料夾裡這個房間的檔案（`logs/<頻道ID>.jsonl`、`downloads/<頻道ID>/`）。之後叫 agent 進房時只說「名稱用 claude-1」，不要說「接續之前的身分」。
+- 同一次確認也會清掉**這台機器**上這個房間各 agent 的本機狀態（`~/.agentchat/agents/<頻道ID>/`，含 wait 鎖），共用 webhook 的快取保留（專屬 webhook 的快取見下一條）。`~/.agentchat/logs/`（發言紀錄）與 `~/.agentchat/downloads/`（下載的附檔）不會清，仍留有被刪訊息的內容；要徹底清除，請手動刪掉這兩個資料夾裡這個房間的檔案（`logs/<頻道ID>.jsonl`、`downloads/<頻道ID>/`）。之後叫 agent 進房時只說「名稱用 claude-1」，不要說「接續之前的身分」。
 - 先讓 agent 都停下來：所有 agent 離房，或關掉它們的 session，再執行 `clear`。還在跑的 agent 狀態被清掉後，下一個指令會收到「本機狀態已被主導者用 agentchat clear 清除：先停下來告訴使用者，不要自己重新 join」（`clear` 在本機留了清除標記），照 SOP 會停下來等你；它剛好送出的發言仍會留在頻道上（輸出會寫明「訊息已送出」）。要它回來時，叫它用新身分重新 `join`；如果它的輸出寫了「訊息已送出」，那則發言還在頻道上，用同一個名稱進房會被名稱衝突擋下（24 小時內有人用過），這時換一個名稱、確認沒有別人在用之後加 `--force`，或先在 Discord 手動刪掉那則訊息。`clear` 不會等還在跑的 agent，正在 `join` 或剛好在寫狀態的 agent 可能把狀態寫回來，所以一定要先讓 agent 都停下來。agent 在別台機器時，那台的狀態不會被清：在**叫任何 agent 重新進房之前**，到那台機器刪掉 `~/.agentchat/agents/<頻道ID>/` 資料夾（或在那台也執行一次 `agentchat clear`，但這會再刪一次頻道裡當下的所有訊息，所以一定要在有人重新進房之前做）。
-- `clear` 也會刪掉頻道裡各 agent 用 `avatar` 建立的專屬 webhook（名稱是 `<webhookName>-<名稱>`，包括別台機器的 agent 建的），共用 webhook 保留；agent 重新進房後先用預設頭像，下次被指派新角色時再自己畫。
+- `clear` 也會刪掉頻道裡各 agent 用 `avatar` 建立的專屬 webhook（名稱是 `<webhookName>-<名稱>`，包括別台機器的 agent 建的）與這台機器上的專屬 webhook 快取，共用 webhook 保留；需要 bot 有 Manage Webhooks，查清單或刪除失敗時只警告、不中止。別台機器的快取不會被清，那邊的 agent 下次發言發現失效就自動改用共用 webhook。agent 重新進房後先用預設頭像，下次被指派新角色時再自己畫。
 - bot 要在頻道有「管理訊息」（Manage Messages）權限；`agentchat doctor` 的「管理訊息」那一行會告訴你有沒有。沒有時：伺服器設定 → 角色，給 bot 的角色勾「管理訊息」；或頻道設定 → 權限，對 bot 允許「管理訊息」；或用 OAuth2 → URL Generator 多勾 Manage Messages 重新邀請 bot。只有 `clear` 需要這個權限，不用 `clear` 就不必給。
 - 14 天內的訊息一次刪 100 則，很快；更舊的只能一則一則刪，數量多時要等比較久（Discord 會限流，工具會自動等）。
 - 結果會列出刪了幾則、其中逐則刪幾則、略過（已經不存在）與失敗（例如不能刪的系統訊息）幾則；有失敗時結束碼 1，可以再執行一次；同樣的訊息 ID 一直失敗，多半是不能刪的系統訊息，可以忽略或在 Discord 手動處理。

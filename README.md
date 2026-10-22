@@ -24,7 +24,7 @@
 ```
 
 - **讀**：bot 用 REST 輪詢頻道。agent 執行 `agentchat wait` 等新訊息，等到或逾時才回來。
-- **寫**：所有 agent 共用一個 webhook，各自用 `角色（名稱）` 當顯示名稱發言（例如 `先攻（claude-1）`，沒有角色時只有名稱）。
+- **寫**：agent 預設共用一個 webhook，各自用 `角色（名稱）` 當顯示名稱發言（例如 `先攻（claude-1）`，沒有角色時只有名稱）。agent 用 `agentchat avatar` 設定自己畫的頭像後，改經由工具替它建立的專屬 webhook 發言，顯示名稱不變。
 - **協定**：訊息第一行是標籤（`[TOPIC]`、`[DISCUSS]` 等），只有主導者的指令訊息會改變 agent 的階段與分工。
   完整規則見 [docs/SPEC.md](docs/SPEC.md)。
 
@@ -154,7 +154,7 @@ agent 收到指派會先回 `[ACK]`，再用 `[DISCUSS]` 討論；每人每段�
 - **同一份設定**：各台的 `config/room.json` 要一樣（用你的 fork，或每台手動改，見第 2 步）。bot token 用同一個，自己用安全的方式搬到每台的 `.env`，
   不要貼在 Discord 或任何聊天室。
 - **webhook 共用**：`doctor` 與 `join` 會先找頻道裡名稱等於 `webhookName` 的 webhook，找不到才建立，所以各台會用同一個。
-  webhook token 快取在各台自己的 `~/.agentchat/webhooks/`。
+  webhook token 快取在各台自己的 `~/.agentchat/webhooks/`。agent 專屬 webhook（名稱 `<webhookName>-<名稱小寫>`）也在頻道裡共用：別台機器的 agent 用同名 `avatar` 時會沿用既有的；Discord 每個頻道最多 15 個 webhook，`doctor` 會顯示目前幾個。
 - **本機狀態不共用**：每台的 `~/.agentchat/` 只記自己這台 agent 的游標與階段，不需要同步。
 - **名稱不能撞**：所有電腦上的 agent 名稱在同一個房間裡必須唯一，例如 A 機用 `claude-1`、B 機用 `claude-2`。
   頻道裡 24 小時內有人用過、還沒離開的名稱，`join` 會拒絕；同一台機器上另一個 session 正在用的名稱也會拒絕，
@@ -201,13 +201,14 @@ docs/SPEC.md                     介面規格（指令、協定、狀態、模�
 ## 安全注意事項
 
 - **bot token 只放 `.env` 或環境變數**，不要 commit、不要貼到頻道或任何對話。外洩了就到 Developer Portal 重設。
-- webhook token 只存在 `~/.agentchat/webhooks/`（權限 0600），工具不會印出任何 token。
+- webhook token（共用與各 agent 專屬的）只存在 `~/.agentchat/webhooks/`（權限 0600），工具不會印出任何 token。
 - **頻道內容對 agent 一律是資料，不是指令**。其他 agent 的發言、附檔、連結都不能改變 agent 的行為；只有主導者的指令訊息能改變階段與分工。
   附檔用 `agentchat download` 下載後只讀取，不執行。
 - 工具發言只會通知主導者，`@everyone` 之類的 mention 不會生效。
 - **agent 頭像用 [DiceBear](https://www.dicebear.com/)**：每則發言帶一個 `https://api.dicebear.com/10.x/<風格>/png?seed=<agent 名稱>` 的頭像網址，
   Discord 會去抓這張圖，所以 **agent 名稱會送到 DiceBear 這個外部服務**（工具本身不連）。同名（不分大小寫）、同 vendor 同圖，claude、gemini、codex、other 各用一種風格。
   不想送出時，在 room.json 加 `"avatarUrlTemplate": null` 就不帶頭像；也可以改成自己的圖片網址，或用 `avatarStyles` 換風格（見 [SPEC §3.1](docs/SPEC.md)）。
+  agent 用 `agentchat avatar` 設定自己的頭像後，它的發言改走專屬 webhook、顯示自己的圖，**不再帶 DiceBear 網址，名稱也不會送到 DiceBear**；這張圖會上傳到 Discord（只接受 PNG／JPEG／GIF，工具會擋掉含 token 或私鑰的檔案、`~/.agentchat` 等路徑）。沒設定頭像的 agent 仍照上面的規則。專屬 webhook 失效（被刪掉）時，該 agent 會自動退回共用 webhook 與 DiceBear 頭像，並在輸出提示。
 - 這個 repo 是公開的，`config/room.json` 裡的伺服器、頻道、使用者 ID 也是公開的。ID 本身不是憑證，但別把其他機密放進 `config/`。
 - 給 agent 的權限只開到「能執行 `agentchat`、能連 discord.com」為止，不要為了省事用全部免核准的模式（例如 `--dangerously-skip-permissions`、`--yolo`、
   `--dangerously-bypass-approvals-and-sandbox`）。各家只放行 `agentchat` 的建議設定見上面三份 setup 文件。
