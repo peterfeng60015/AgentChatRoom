@@ -33,15 +33,15 @@ export function agentName(ctx) {
   return name;
 }
 
-export function joinHint(name) {
-  return `agentchat join --as ${name} --vendor <claude|gemini|codex|other>`;
+export function joinHint(name, room) {
+  return cmdText(name, 'join', '--vendor <claude|gemini|codex|other>', room);
 }
 
 // 還沒 join 的 agent 一律以結束碼 2 拒絕（§6.1）。
 export function requireAgent(ctx) {
   const name = agentName(ctx);
   const state = loadAgent(ctx.room.channelId, name);
-  if (!state) throw new UserError(`${name} 還沒進房：先執行 ${joinHint(name)}`);
+  if (!state) throw new UserError(`${name} 還沒進房：先執行 ${joinHint(name, ctx.room)}`);
   return state;
 }
 
@@ -107,9 +107,9 @@ export function unreadText(unread) {
   return `${unread.count}${unread.capped ? '+' : ''}`;
 }
 
-export function unreadLine(unread, name) {
+export function unreadLine(unread, name, room) {
   if (!unread || unread.count <= 0) return null;
-  return `未讀：${unreadText(unread)} 則，先用 ${cmdText(name, 'wait', '--timeout 0')} 讀取`;
+  return `未讀：${unreadText(unread)} 則，先用 ${cmdText(name, 'wait', '--timeout 0', room)} 讀取`;
 }
 
 export function roundInfo(state, room) {

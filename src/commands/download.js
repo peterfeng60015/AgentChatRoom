@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { UserError } from '../errors.js';
+import { cmdText } from '../protocol.js';
 import { fmtSize } from '../render.js';
 import { downloadDir } from '../state.js';
 import { requireAgent } from '../context.js';
@@ -36,9 +37,9 @@ function uniqueName(name, used) {
 
 export async function run(ctx) {
   const room = ctx.room;
-  requireAgent(ctx);
+  const state = requireAgent(ctx);
   const [messageId, ...extra] = ctx.positionals;
-  if (!messageId) throw new UserError('缺少訊息 ID：agentchat download --as <名稱> <訊息ID>');
+  if (!messageId) throw new UserError(`缺少訊息 ID：${cmdText(state.name, 'download', '<訊息ID>', room)}`);
   if (extra.length) throw new UserError(`多餘的參數：${extra.join(' ')}`);
   if (!/^\d{1,25}$/.test(messageId)) throw new UserError(`訊息 ID 必須是數字：${messageId}`);
 

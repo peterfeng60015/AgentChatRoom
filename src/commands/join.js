@@ -11,7 +11,7 @@ import {
   publicState,
   stateLines,
 } from '../context.js';
-import { sendParts } from '../publish.js';
+import { guardSecrets, sendParts } from '../publish.js';
 
 export const summary = '進房：建立本機狀態、套用進行中的議題與指派，發 [JOIN]';
 export const usage =
@@ -100,6 +100,8 @@ export async function run(ctx) {
   if (ctx.values.resume && ctx.values.force) throw new UserError('--resume 與 --force 只能擇一');
   const room = ctx.room;
   const client = ctx.client;
+  // §6.3 join 第 1 步：先確認頻道（可讀、屬於 room.guildId、不是討論串），不通過就不建 webhook、不發 [JOIN]。
+  await checkChannel(client, room);
   const existing = loadAgent(room.channelId, name);
 
   if (ctx.values.resume && (!existing || existing.left)) {
@@ -121,8 +123,6 @@ export async function run(ctx) {
     };
   }
 
-  // §6.3 join 第 1 步：先確認頻道（可讀、屬於 room.guildId、不是討論串），不通過就不建 webhook、不發 [JOIN]。
-  await checkChannel(client, room);
   const { webhook } = await ensureWebhook(client, room, { verify: true });
   const raws = await fetchRecent(client, room.channelId);
   const now = Date.now();
@@ -167,6 +167,7 @@ export async function run(ctx) {
 
   const fields = { vendor, model: oneLine(ctx.values.model), host: oneLine(ctx.values.host) };
   const content = buildMessage('JOIN', name, fields);
+  guardSecrets(room, content, []);
   const ids = await sendParts(ctx, state, [content]);
   recordOwnMessages(state, ids);
   if (notes.length) {

@@ -34,11 +34,13 @@ export const BROADCAST_NAMES = ['all', 'agents', 'everyone', 'here', '全體'];
 export function waitTimeoutOf(room) {
   return Math.min(540, Math.max(0, Math.round(room?.waitTimeoutSec ?? 90)));
 }
-export function cmdText(name, sub, args = '') {
-  return `agentchat ${sub} --as ${name}${args ? ` ${args}` : ''}`;
+// room.roomArg 是 --room 給的名稱：用非預設房間時，提示也要帶 --room，照抄才不會跑到預設房間。
+export function cmdText(name, sub, args = '', room = null) {
+  const r = room?.roomArg ? ` --room ${room.roomArg}` : '';
+  return `agentchat ${sub} --as ${name}${r}${args ? ` ${args}` : ''}`;
 }
 export function waitText(name, room, until) {
-  return cmdText(name, 'wait', `${until ? `--until ${until} ` : ''}--timeout ${waitTimeoutOf(room)}`);
+  return cmdText(name, 'wait', `${until ? `--until ${until} ` : ''}--timeout ${waitTimeoutOf(room)}`, room);
 }
 
 // 各階段允許的發言指令（§5.2）。wait、status、read 這類只讀指令不在這裡管。
@@ -381,13 +383,15 @@ function splitByBudget(source, budget, { fences = true } = {}) {
   const chunks = [];
   let current = null; // 目前這段的行
   let head = 0; // 這段開頭由工具補上的重開行數（0 或 1）
+  let openAt = -1; // 這段裡 fence 開頭行的位置（不是工具補的重開行）；-1 表示這段沒有開 fence
   let fence = null; // 目前所在的 fence：{ marker, reopen }
 
   const size = (lines, extra) => (lines.length ? lines.join('\n').length + 1 : 0) + extra.length;
   const flush = () => {
     let close = Boolean(fence);
     // fence 剛好在這段最後一行打開、還沒有內容：把開頭行留給下一段（下一段會用一模一樣的行重開），不留下空的區塊。
-    if (current && fence && current.length > head + 1 && current[current.length - 1].trim() === fence.reopen) {
+    // 用位置判斷，不比字串：fence 裡的內容行也可能剛好長得像開頭行。
+    if (current && fence && current.length > head + 1 && openAt === current.length - 1 && current[openAt].trim() === fence.reopen) {
       current.pop();
       close = false;
     }
@@ -402,6 +406,7 @@ function splitByBudget(source, budget, { fences = true } = {}) {
     if (!current) {
       current = fence ? [fence.reopen] : [];
       head = current.length;
+      openAt = -1;
     }
     current.push(line);
   };
@@ -423,7 +428,10 @@ function splitByBudget(source, budget, { fences = true } = {}) {
     const room = (f) => Math.max(1, budget - (f ? f.reopen.length + 1 : 0));
     if (line.length <= room(fence)) {
       push(line);
-      if (next) fence = next;
+      if (next) {
+        fence = next;
+        openAt = current.length - 1;
+      }
       continue;
     }
     // 單行就超過上限：硬切，但不切開代理對。開頭行的第一片放完就進入 fence，之後的片段跨段時才會補成對。
@@ -436,7 +444,10 @@ function splitByBudget(source, budget, { fences = true } = {}) {
       if (count === 0) piece = rest[count++];
       rest = rest.slice(count);
       push(piece);
-      if (next && !fence) fence = next;
+      if (next && !fence) {
+        fence = next;
+        openAt = current.length - 1;
+      }
     }
   }
   flush();
@@ -611,7 +622,7 @@ export function applyDirectives(state, messages, room) {
             ? `isolation「${m.fields.isolation}」無效（只接受 worktree、shared），已當成沒寫${branch ? '，用預設的 worktree' : ''}；有疑問請 ask。`
             : '';
         notes.push(
-          `你被指派（id=${m.id}）：${parts.join('；')}。${clash}${badIso}先用 ${cmdText(state.name, 'ack', '<你的理解>')} 回覆，再用 ${cmdText(state.name, 'discuss', '<內文>')} 討論（本段上限 ${roundLimit(state, room)} 則）。`,
+          `你被指派（id=${m.id}）：${parts.join('；')}。${clash}${badIso}先用 ${cmdText(state.name, 'ack', '<你的理解>', room)} 回覆，再用 ${cmdText(state.name, 'discuss', '<內文>', room)} 討論（本段上限 ${roundLimit(state, room)} 則）。`,
         );
         break;
       }
@@ -621,7 +632,7 @@ export function applyDirectives(state, messages, room) {
         // 工作中的長步驟不算閒置（§5.4）。
         state.emptyWaitSince = null;
         notes.push(
-          `主導者 [GO]（id=${m.id}）：討論結束，依你的分工開始執行；每完成一個里程碑用 ${cmdText(state.name, 'progress', '--percent <0-100> <內文>')} 回報（至少每 ${room.progressReminderMin} 分鐘一次），做完用 ${cmdText(state.name, 'done', '<摘要>')}。`,
+          `主導者 [GO]（id=${m.id}）：討論結束，依你的分工開始執行；每完成一個里程碑用 ${cmdText(state.name, 'progress', '--percent <0-100> <內文>', room)} 回報（至少每 ${room.progressReminderMin} 分鐘一次），做完用 ${cmdText(state.name, 'done', '<摘要>', room)}。`,
         );
         break;
       case 'CONTINUE': {
@@ -640,7 +651,7 @@ export function applyDirectives(state, messages, room) {
         break;
       case 'CLOSE':
         state.phase = 'closed';
-        notes.push(`主導者 [CLOSE]（id=${m.id}）：議題結束。請 ${cmdText(state.name, 'leave')}，然後結束任務並向使用者報告。`);
+        notes.push(`主導者 [CLOSE]（id=${m.id}）：議題結束。請 ${cmdText(state.name, 'leave', '', room)}，然後結束任務並向使用者報告。`);
         break;
       case 'ANSWER':
         state.pendingQuestionId = null;
@@ -677,7 +688,7 @@ export function reminders(state, room, now = Date.now()) {
       if (Number.isFinite(since)) {
         const minutes = Math.floor((now - since) / 60000);
         if (minutes >= room.progressReminderMin) {
-          list.push(`距上次 [PROGRESS] 已 ${minutes} 分鐘，請用 ${cmdText(state.name, 'progress', '--percent <0-100> <內文>')} 回報進度。`);
+          list.push(`距上次 [PROGRESS] 已 ${minutes} 分鐘，請用 ${cmdText(state.name, 'progress', '--percent <0-100> <內文>', room)} 回報進度。`);
         }
       }
       break;
@@ -689,10 +700,10 @@ export function reminders(state, room, now = Date.now()) {
       list.push(`目前是 [STOP] 狀態：停下手上的動作，只用 ${waitText(state.name, room, 'moderator')} 等指示。`);
       break;
     case 'closed':
-      list.push(`議題已 [CLOSE]：請 ${cmdText(state.name, 'leave')} 後結束任務並向使用者報告。`);
+      list.push(`議題已 [CLOSE]：請 ${cmdText(state.name, 'leave', '', room)} 後結束任務並向使用者報告。`);
       break;
     case 'idle':
-      list.push(`已發過 [IDLE]：頻道長時間無人回應，請 ${cmdText(state.name, 'leave')} 後結束任務並告知使用者。`);
+      list.push(`已發過 [IDLE]：頻道長時間無人回應，請 ${cmdText(state.name, 'leave', '', room)} 後結束任務並告知使用者。`);
       break;
     case 'left':
       list.push(`${LEFT_TEXT}。`);

@@ -61,12 +61,10 @@ export function parseEnv(text) {
       .trim()
       .replace(/^export\s+/, '');
     let value = line.slice(i + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    } else {
-      // 沒加引號時，空白之後的 # 是行尾註解。
-      value = value.replace(/\s+#.*$/, '');
-    }
+    // 加引號的值可以在引號後面接行尾註解；沒加引號時，空白之後的 # 是行尾註解。
+    const quoted = value.match(/^(["'])(.*?)\1\s*(?:#.*)?$/);
+    if (quoted) value = quoted[2];
+    else value = value.replace(/\s+#.*$/, '');
     env[key] = value;
   }
   return env;
@@ -134,7 +132,7 @@ export function loadRoom(roomName) {
   }
   // 選填欄位寫成 null 或空字串時用預設值，不要讓「基準分支：null」或空名稱的 webhook 跑出來。
   const given = Object.fromEntries(Object.entries(json).filter(([, v]) => v !== null && v !== ''));
-  const room = { ...ROOM_DEFAULTS, ...given, file };
+  const room = { ...ROOM_DEFAULTS, ...given, file, roomArg: roomName || null };
   for (const [key, [min, integer]] of Object.entries(NUMERIC)) {
     const v = room[key];
     if (typeof v !== 'number' || !Number.isFinite(v) || v < min || (integer && !Number.isInteger(v))) {

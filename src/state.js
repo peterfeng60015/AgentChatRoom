@@ -22,25 +22,50 @@ function sleepSync(ms) {
 }
 
 // 簡單的鎖檔：同一個 agent 的 wait 與發言指令可能同時讀改寫狀態檔，沒有鎖會互相蓋掉更新。
-// 鎖只在同步的讀改寫期間持有（毫秒等級），超過 LOCK_STALE_MS 還在就是行程當掉留下的，直接清掉。
+// 鎖只在同步的讀改寫期間持有（毫秒等級），超過 LOCK_STALE_MS 還在就是行程當掉留下的。
+// 鎖檔內容是這次的識別碼，釋放時只刪自己的；清殘留鎖在 .break 短鎖裡進行，
+// 免得兩個行程同時清殘留時一個刪掉另一個剛建好的鎖。
 function withLock(file, fn) {
   const lock = `${file}.lock`;
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const token = `${process.pid}.${crypto.randomBytes(6).toString('hex')}`;
   const start = Date.now();
   for (;;) {
     try {
-      fs.closeSync(fs.openSync(lock, 'wx'));
+      fs.writeFileSync(lock, token, { flag: 'wx' });
       break;
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
     }
+    let seen;
     try {
-      if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) {
-        fs.rmSync(lock, { force: true });
-        continue;
-      }
+      seen = { text: fs.readFileSync(lock, 'utf8'), age: Date.now() - fs.statSync(lock).mtimeMs };
     } catch {
       continue; // 鎖剛好被放掉了，再試一次。
+    }
+    if (seen.age > LOCK_STALE_MS) {
+      // 清殘留鎖要先拿到 .break 短鎖，在裡面重新確認還是舊的才刪；新建的鎖 mtime 是新的，不會被誤刪。
+      const breaker = `${lock}.break`;
+      try {
+        fs.writeFileSync(breaker, token, { flag: 'wx' });
+      } catch (e) {
+        if (e.code !== 'EEXIST') throw e;
+        try {
+          if (Date.now() - fs.statSync(breaker).mtimeMs > LOCK_STALE_MS) fs.rmSync(breaker, { force: true });
+        } catch {
+          // 已經被清掉。
+        }
+        sleepSync(2);
+        continue;
+      }
+      try {
+        if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) fs.rmSync(lock, { force: true });
+      } catch {
+        // 鎖已經不在。
+      } finally {
+        fs.rmSync(breaker, { force: true });
+      }
+      continue;
     }
     if (Date.now() - start > LOCK_WAIT_MS) throw new UserError(`狀態檔被鎖住太久：${lock}`);
     sleepSync(5 + Math.floor(Math.random() * 10));
@@ -48,7 +73,11 @@ function withLock(file, fn) {
   try {
     return fn();
   } finally {
-    fs.rmSync(lock, { force: true });
+    try {
+      if (fs.readFileSync(lock, 'utf8') === token) fs.rmSync(lock, { force: true });
+    } catch {
+      // 鎖已經不在。
+    }
   }
 }
 
@@ -66,35 +95,44 @@ function pidAlive(pid) {
 }
 
 // §6.3：同一個名稱同時只能有一個 wait。鎖檔內容是 pid；pid 已不在（或鎖太舊）就視為殘留，直接接手。
+// 建鎖用「暫存檔寫好 pid 再 link」：link 是原子的，鎖檔一出現就有內容，別人不會讀到空檔誤判成殘留。
+// 接手殘留鎖時在短鎖裡重讀確認，免得兩個行程都判定殘留、後者刪掉前者剛建好的新鎖。
 // 回傳釋放鎖的函式。
 export function acquireWaitLock(channelId, name) {
   const lock = agentFile(channelId, name).replace(/\.json$/, '.wait.lock');
   fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
-  for (let attempt = 0; attempt < 3; attempt++) {
+  const read = () => {
     try {
-      fs.writeFileSync(lock, String(process.pid), { flag: 'wx' });
+      return { pid: Number(fs.readFileSync(lock, 'utf8').trim()), age: Date.now() - fs.statSync(lock).mtimeMs };
+    } catch {
+      return null; // 鎖剛好被放掉了
+    }
+  };
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const tmp = `${lock}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+    fs.writeFileSync(tmp, String(process.pid));
+    try {
+      fs.linkSync(tmp, lock);
       return () => {
-        try {
-          if (fs.readFileSync(lock, 'utf8').trim() === String(process.pid)) fs.rmSync(lock, { force: true });
-        } catch {
-          // 鎖檔已經不在。
-        }
+        const cur = read();
+        if (cur && cur.pid === process.pid) fs.rmSync(lock, { force: true });
       };
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
+    } finally {
+      fs.rmSync(tmp, { force: true });
     }
-    let pid = NaN;
-    let age = 0;
-    try {
-      pid = Number(fs.readFileSync(lock, 'utf8').trim());
-      age = Date.now() - fs.statSync(lock).mtimeMs;
-    } catch {
-      continue; // 鎖剛好被放掉了。
+    const seen = read();
+    if (!seen) continue;
+    if (pidAlive(seen.pid) && seen.age < WAIT_LOCK_MAX_AGE_MS) {
+      throw new ProtocolError(`同名已有另一個 wait 在執行（pid ${seen.pid}，${fmtTime(Date.now() - seen.age)} 開始），先讀完它的輸出`);
     }
-    if (pid !== process.pid && pidAlive(pid) && age < WAIT_LOCK_MAX_AGE_MS) {
-      throw new ProtocolError(`同名已有另一個 wait 在執行（pid ${pid}，${fmtTime(Date.now() - age)} 開始），先讀完它的輸出`);
-    }
-    fs.rmSync(lock, { force: true });
+    withLock(lock, () => {
+      const again = read();
+      if (again && again.pid === seen.pid && (!pidAlive(again.pid) || again.age >= WAIT_LOCK_MAX_AGE_MS)) {
+        fs.rmSync(lock, { force: true });
+      }
+    });
   }
   throw new ProtocolError('同名已有另一個 wait 在執行，先讀完它的輸出');
 }

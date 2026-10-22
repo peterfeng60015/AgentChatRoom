@@ -1,7 +1,7 @@
 import { toInt } from '../args.js';
 import { compareSnowflake, snowflakeNow } from '../discord.js';
 import { ProtocolError, UserError } from '../errors.js';
-import { LEFT_TEXT, applyEach, buildMessage, reminders } from '../protocol.js';
+import { LEFT_TEXT, applyEach, buildMessage, cmdText, reminders } from '../protocol.js';
 import { kindLabel, renderMessages, section } from '../render.js';
 import { acquireWaitLock, appendLog, loadAgent, recordOwnMessages, updateAgent } from '../state.js';
 import { normalizeAll, phaseOf, publicMessage, requireAgent, roundInfo, summaryLine } from '../context.js';
@@ -134,7 +134,7 @@ async function waitLocked(ctx, room, initial, timeout, until) {
     matched: `狀態：符合條件（${reason}）`,
     timeout: others ? `狀態：逾時，有 ${others} 則其他新訊息` : '狀態：逾時，沒有新訊息',
     idle: '狀態：已自動發出 [IDLE]',
-    partial: `狀態：還有未讀，先處理這 ${MAX_BATCH} 則，再執行 agentchat wait --as ${updated.name} --timeout 0`,
+    partial: `狀態：還有未讀，先處理這 ${MAX_BATCH} 則，再執行 ${cmdText(updated.name, 'wait', '--timeout 0', room)}`,
   }[status];
   const rem = reminders(updated, room);
   // 注意與提醒放在訊息前面：輸出很長時，agent 的工具常只顯示開頭。

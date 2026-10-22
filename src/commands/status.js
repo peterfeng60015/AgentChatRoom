@@ -1,4 +1,4 @@
-import { reminders } from '../protocol.js';
+import { cmdText, reminders } from '../protocol.js';
 import { fmtTime, section } from '../render.js';
 import { countUnread, effectiveLines, publicState, requireAgent, stateLines, unreadText } from '../context.js';
 
@@ -20,7 +20,7 @@ export async function buildStatus(ctx, state) {
   const text = [`${state.name} @ 房間 ${room.roomName}（頻道 ${room.channelId}）`, ...stateLines(state, room), ...effectiveLines(state, room)];
   if (unreadError) text.push(`未讀：無法取得（${unreadError}）`);
   else {
-    const hint = unread.count ? `，先用 agentchat wait --as ${state.name} --timeout 0 讀取` : '';
+    const hint = unread.count ? `，先用 ${cmdText(state.name, 'wait', '--timeout 0', room)} 讀取` : '';
     text.push(`未讀：${unreadText(unread)} 則${hint}`);
   }
   // 最近一次 wait／join 的注意（附時間，讓 agent 判斷是不是舊的）：輸出被截掉或對話壓縮後可以在這裡找回。
