@@ -433,7 +433,7 @@ describe('CLI 與指令層的修正', () => {
     assert.equal(env.readState('claude-1').role, 'dc-API');
     const r = await env.run(['ack', '--as', 'claude-1', '收到']);
     assert.equal(r.code, 0, r.stderr);
-    assert.equal(env.mock.executions.at(-1).payload.username, 'claude-1 (dc-API)');
+    assert.equal(env.mock.executions.at(-1).payload.username, 'dc-API（claude-1）');
   });
 
   test('保留字不能當名稱；名稱比對不分大小寫（狀態檔名一律小寫）', async () => {

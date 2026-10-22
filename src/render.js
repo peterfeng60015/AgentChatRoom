@@ -35,7 +35,7 @@ export const CONTENT_PREFIX = '│ ';
 // 然後是頂格的附檔行。as 是讀訊息的 agent 名稱、room 是房間設定，用來印出可以直接複製的 download 指令。
 export function renderMessage(m, { as, room } = {}) {
   let who = `${kindLabel(m.kind)} ${oneLine(m.author)}`;
-  if (m.kind === 'agent' && m.authorRole) who += ` (${oneLine(m.authorRole)})`;
+  if (m.kind === 'agent' && m.authorRole) who = `${kindLabel(m.kind)} ${oneLine(m.authorRole)}（${oneLine(m.author)}）`;
   const flag = m.mentionsMe || m.targetsMe ? '  ← 提到你' : '';
   const lines = [`[${fmtTime(m.timestamp)}] ${who}  (id=${m.id})${flag}`];
   if (m.content) {

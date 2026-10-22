@@ -825,8 +825,8 @@ describe('resolveMentions（§4.4 主導者 mention）', () => {
 // ---- displayName / splitAgentName / isSelfName / sanitizeRole ----
 
 describe('displayName', () => {
-  test('名稱 (角色)', () => {
-    assert.equal(displayName('claude-1', '前端'), 'claude-1 (前端)');
+  test('角色（名稱）：全形括號、括號前不空格', () => {
+    assert.equal(displayName('claude-1', '先攻'), '先攻（claude-1）');
   });
 
   test('沒有角色時只有名稱', () => {
@@ -834,50 +834,80 @@ describe('displayName', () => {
     assert.equal(displayName('claude-1', ''), 'claude-1');
   });
 
-  test('總長截到 80 字', () => {
+  test('總長截到 80 字，只截角色、名稱保持完整', () => {
     const s = displayName('claude-1', '很長的角色'.repeat(30));
-    assert.ok(s.length <= 80, `長度 ${s.length}`);
-    assert.ok(s.startsWith('claude-1 ('));
+    assert.equal(s.length, 80);
+    assert.ok(s.endsWith('（claude-1）'), s);
+    assert.ok(s.startsWith('很長的角色'));
+    const long = 'a'.repeat(31);
+    const t = displayName(long, 'r'.repeat(100));
+    assert.equal(t.length, 80);
+    assert.ok(t.endsWith(`（${long}）`));
   });
 
   test('剛好 80 字不截', () => {
-    const role = 'r'.repeat(80 - 'claude-1 ()'.length);
-    assert.equal(displayName('claude-1', role), `claude-1 (${role})`);
+    const role = 'r'.repeat(80 - 'claude-1（）'.length);
+    assert.equal(displayName('claude-1', role), `${role}（claude-1）`);
   });
 
   test('與 splitAgentName 來回一致', () => {
-    assert.deepEqual(splitAgentName(displayName('gemini-2', '後端 API')), { name: 'gemini-2', role: '後端 API' });
+    assert.deepEqual(splitAgentName(displayName('gemini-2', '後端-API')), { name: 'gemini-2', role: '後端-API' });
+    assert.deepEqual(splitAgentName(displayName('gemini-2', '很長的角色'.repeat(30))).name, 'gemini-2');
   });
 });
 
-describe('splitAgentName', () => {
-  test('名稱 (角色)', () => {
+describe('splitAgentName（新格式與舊格式）', () => {
+  test('新格式 角色（名稱）', () => {
+    assert.deepEqual(splitAgentName('先攻（claude-1）'), { name: 'claude-1', role: '先攻' });
+  });
+
+  test('舊格式 名稱 (角色) 也認得', () => {
     assert.deepEqual(splitAgentName('claude-1 (前端)'), { name: 'claude-1', role: '前端' });
+    assert.deepEqual(splitAgentName('claude-1 (台北人)'), { name: 'claude-1', role: '台北人' });
   });
 
   test('只有名稱', () => {
-    const r = splitAgentName('claude-1');
-    assert.equal(r.name, 'claude-1');
-    assert.equal(r.role ?? null, null);
+    assert.deepEqual(splitAgentName('claude-1'), { name: 'claude-1', role: null });
+  });
+
+  test('括號裡不是合法名稱、或角色是空的，整個當名稱', () => {
+    assert.deepEqual(splitAgentName('（claude-1）'), { name: '（claude-1）', role: null });
+    assert.deepEqual(splitAgentName('Peter（產品）'), { name: 'Peter（產品）', role: null });
+    assert.deepEqual(splitAgentName('先攻（claude 1）'), { name: '先攻（claude 1）', role: null });
+  });
+
+  test('角色沒清理過、含全形括號時，取最後一對括號裡的名稱', () => {
+    assert.deepEqual(splitAgentName('前端（主）（claude-1）'), { name: 'claude-1', role: '前端（主）' });
+    assert.equal(isSelfName('前端（主）（claude-1）', 'claude-1'), true);
+  });
+
+  test('舊格式的角色含括號也拆得出名稱', () => {
+    assert.deepEqual(splitAgentName('claude-1 (前端（主）)'), { name: 'claude-1', role: '前端（主）' });
+    assert.deepEqual(splitAgentName('claude-1 (a) (b)'), { name: 'claude-1', role: 'a) (b' });
   });
 });
 
 describe('isSelfName（§4.5 self 的名稱判斷）', () => {
-  test('等於我的名稱，或以「我的名稱 (」開頭', () => {
+  test('我的名稱、角色（我的名稱）、舊格式 我的名稱 (角色)', () => {
     assert.equal(isSelfName('claude-1', 'claude-1'), true);
+    assert.equal(isSelfName('先攻（claude-1）', 'claude-1'), true);
     assert.equal(isSelfName('claude-1 (前端)', 'claude-1'), true);
   });
 
   test('名稱比對不分大小寫（§6.1）', () => {
     assert.equal(isSelfName('CLAUDE-1', 'claude-1'), true);
     assert.equal(isSelfName('Claude-1 (前端)', 'claude-1'), true);
+    assert.equal(isSelfName('先攻（Claude-1）', 'claude-1'), true);
   });
 
-  test('前綴相同的別人不算', () => {
+  test('前綴或後綴相同的別人不算，角色剛好是我的名稱也不算', () => {
     assert.equal(isSelfName('claude-10', 'claude-1'), false);
     assert.equal(isSelfName('claude-10 (前端)', 'claude-1'), false);
     assert.equal(isSelfName('claude-1-x', 'claude-1'), false);
     assert.equal(isSelfName('claude-2 (claude-1)', 'claude-1'), false);
+    assert.equal(isSelfName('先攻（claude-10）', 'claude-1'), false);
+    assert.equal(isSelfName('先攻（xclaude-1）', 'claude-1'), false);
+    assert.equal(isSelfName('claude-1（claude-2）', 'claude-1'), false);
   });
 });
 
@@ -943,13 +973,16 @@ describe('authorKind（§4.5）', () => {
     assert.equal(authorKind(modRaw('hi'), ROOM, self, opts), 'moderator');
   });
 
-  test('self：本房 webhook，顯示名稱是我的名稱或以「我的名稱 (」開頭', () => {
+  test('self：本房 webhook，顯示名稱是我的名稱、角色（我的名稱），或舊格式 我的名稱 (角色)', () => {
     assert.equal(authorKind(agentRaw('claude-1', 'hi'), ROOM, self, opts), 'self');
+    assert.equal(authorKind(agentRaw('前端（claude-1）', 'hi'), ROOM, self, opts), 'self');
     assert.equal(authorKind(agentRaw('claude-1 (前端)', 'hi'), ROOM, self, opts), 'self');
   });
 
   test('agent：本房 webhook 的其他名稱（含前綴相同的名稱）', () => {
     assert.equal(authorKind(agentRaw('claude-2 (後端)', 'hi'), ROOM, self, opts), 'agent');
+    assert.equal(authorKind(agentRaw('後端（claude-2）', 'hi'), ROOM, self, opts), 'agent');
+    assert.equal(authorKind(agentRaw('claude-1（claude-2）', 'hi'), ROOM, self, opts), 'agent');
     assert.equal(authorKind(agentRaw('claude-10', 'hi'), ROOM, self, opts), 'agent');
   });
 
@@ -1014,6 +1047,10 @@ describe('normalize（§7.1）', () => {
     assert.equal(m.kind, 'agent');
     assert.equal(m.author, 'gemini-2');
     assert.equal(m.authorRole, '後端');
+    const n = norm(agentRaw('後端（gemini-2）', '[DISCUSS] 看法'), self);
+    assert.equal(n.kind, 'agent');
+    assert.equal(n.author, 'gemini-2');
+    assert.equal(n.authorRole, '後端');
   });
 
   test('replyTo 取自 message_reference.message_id；沒有回覆時為空', () => {

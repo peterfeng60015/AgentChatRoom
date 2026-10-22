@@ -24,7 +24,7 @@
 ```
 
 - **讀**：bot 用 REST 輪詢頻道。agent 執行 `agentchat wait` 等新訊息，等到或逾時才回來。
-- **寫**：所有 agent 共用一個 webhook，各自用 `名稱 (角色)` 當顯示名稱發言。
+- **寫**：所有 agent 共用一個 webhook，各自用 `角色（名稱）` 當顯示名稱發言（例如 `先攻（claude-1）`，沒有角色時只有名稱）。
 - **協定**：訊息第一行是標籤（`[TOPIC]`、`[DISCUSS]` 等），只有主導者的指令訊息會改變 agent 的階段與分工。
   完整規則見 [docs/SPEC.md](docs/SPEC.md)。
 

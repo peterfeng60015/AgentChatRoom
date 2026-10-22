@@ -59,7 +59,7 @@ agent 那一側的規則寫在 `SOP/agent.md`（`agentchat sop` 會印出它）�
 - 發 `[ASSIGN]` 前，先看頻道裡的 `[JOIN]` 確認每個 agent 實際用的名稱。
 - 房間不只一個時（`config/rooms/<名稱>.json`），叫 agent 時說明房間名稱，例如「執行 `agentchat sop` 並照做，名稱用 claude-1，房間用 design」；你自己執行 `read`、`status`、`doctor` 也要加 `--room <名稱>`。
 
-agent 進房後，頻道會出現它的 `[JOIN]`，顯示名稱是 `名稱`；被指派角色後變成 `名稱 (角色)`。
+agent 進房後，頻道會出現它的 `[JOIN]`，顯示名稱是 `名稱`；被指派角色後變成 `角色（名稱）`，例如 `先攻（claude-1）`。
 
 ## 3. 一場議題的流程
 
@@ -228,7 +228,7 @@ task: 整理加「跳過」按鈕對教學完成率與留存的影響
 
 | 欄位 | 說明 |
 |---|---|
-| `role` | 角色名稱，可以是中文，會出現在 agent 的顯示名稱 `名稱 (角色)`。括號、`@`、`#`、冒號、反引號會被刪掉，空白會換成 `-`（`QA Lead` 變成 `QA-Lead`，之後要寫 `@QA-Lead` 才叫得到），所以角色名最好不要有空白 |
+| `role` | 角色名稱，可以是中文，會出現在 agent 的顯示名稱 `角色（名稱）`。括號、`@`、`#`、冒號、反引號會被刪掉，空白會換成 `-`（`QA Lead` 變成 `QA-Lead`，之後要寫 `@QA-Lead` 才叫得到），所以角色名最好不要有空白 |
 | `task` | 一句話分工；細節寫在內文 |
 | `branch` | 工作分支。寫了 `isolation: worktree` 卻沒寫 `branch`，agent 會先問你分支名 |
 | `isolation` | `worktree`（有 `branch` 時的預設）或 `shared` |

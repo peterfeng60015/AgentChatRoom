@@ -54,6 +54,22 @@ describe('wait', () => {
     assert.equal(again.json().messages.length, 0, '游標已前進，不會重複讀到');
   });
 
+  test('頻道裡新舊兩種顯示名稱格式的自己的訊息都是 self，不會被當成新訊息；別人的新格式照常拆出名稱與角色', async () => {
+    agentSays('前端（claude-1）', '新格式的我');
+    agentSays('claude-1 (台北人)', '舊格式的我');
+    agentSays('先攻（Claude-1）', '大小寫不同的我');
+    let r = await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    assert.match(r.stdout, /^狀態：逾時，沒有新訊息/);
+    const other = agentSays('claude-1（claude-2）', '角色剛好叫 claude-1 的別人');
+    r = await env.run(['wait', '--as', 'claude-1', '--timeout', '0', '--json']);
+    const out = r.json();
+    assert.equal(out.status, 'matched');
+    assert.deepEqual(out.messages.map((m) => [m.id, m.kind, m.author, m.authorRole]), [[other.id, 'agent', 'claude-2', 'claude-1']]);
+    agentSays('後端（gemini-1）', '別人');
+    r = await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
+    assert.match(r.stdout, /^\[[^\]]+\] agent 後端（gemini-1）  \(id=\d+\)$/m);
+  });
+
   test('--json 的欄位齊全', async () => {
     env.mock.addMessage({ content: '大家好' });
     const out = (await env.run(['wait', '--as', 'claude-1', '--timeout', '0', '--json'])).json();
@@ -211,7 +227,7 @@ describe('wait', () => {
     assert.equal(env.readState('claude-1').role, 'QA-Lead');
     assert.equal(env.mock.executions.length, 1);
     await env.run(['post', '--as', 'claude-1', 'hi']);
-    assert.equal(env.mock.executions.at(-1).payload.username, 'claude-1 (QA-Lead)');
+    assert.equal(env.mock.executions.at(-1).payload.username, 'QA-Lead（claude-1）');
 
     agentSays('gemini-1', '@qa-lead請看');
     assert.equal(await until(), 'matched');
