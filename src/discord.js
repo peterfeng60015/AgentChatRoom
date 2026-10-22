@@ -182,6 +182,17 @@ export function createClient(token, { apiBase, retryBaseMs = 1000, timeoutMs = R
 
     message: (channelId, messageId) => request('GET', `/channels/${channelId}/messages/${messageId}`),
 
+    // 刪除訊息（clear 用），都需要「管理訊息」權限。bulkDelete 一次 2–100 則，只能刪 14 天內的。
+    bulkDelete: (channelId, messageIds) =>
+      request('POST', `/channels/${channelId}/messages/bulk-delete`, { json: { messages: messageIds } }),
+
+    deleteMessage: (channelId, messageId) => request('DELETE', `/channels/${channelId}/messages/${messageId}`),
+
+    // 計算 bot 在頻道的權限用（clear、doctor）。
+    guildMember: (guildId, userId) => request('GET', `/guilds/${guildId}/members/${userId}`),
+
+    guildRoles: (guildId) => request('GET', `/guilds/${guildId}/roles`),
+
     listWebhooks: (channelId) => request('GET', `/channels/${channelId}/webhooks`),
 
     createWebhook: (channelId, name) => request('POST', `/channels/${channelId}/webhooks`, { json: { name } }),

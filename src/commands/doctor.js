@@ -8,6 +8,7 @@ import { validateAgentName } from '../protocol.js';
 const readText = (room) => `agentchat read${room?.roomArg ? ` --room ${room.roomArg}` : ''} --last 5`;
 import { loadAgent } from '../state.js';
 import { WEBHOOK_SOURCE_TEXT, ensureWebhook, summaryLine } from '../context.js';
+import { botChannelAccess, permissionFix } from './clear.js';
 
 export const summary = '逐項檢查 Node、設定、bot token、Discord 權限與 webhook';
 export const usage = 'agentchat doctor [--as <名稱>] [--send-test]';
@@ -102,6 +103,7 @@ export async function run(ctx) {
 
       // 6. 頻道（404 代表 room.json 的 channelId 填錯，是設定問題）
       let channelOk = false;
+      let channel = null;
       await step('頻道', async () => {
         let ch;
         try {
@@ -113,6 +115,7 @@ export async function run(ctx) {
           }
           throw e;
         }
+        channel = ch;
         if (ch.guild_id !== room.guildId) {
           fail('頻道', `頻道 ${room.channelId} 不屬於 room.guildId ${room.guildId}（實際是 ${ch.guild_id ?? '無'}）`, true);
         } else if (THREAD_TYPES.has(ch.type)) {
@@ -143,6 +146,17 @@ export async function run(ctx) {
           } else throw e;
         }
       });
+
+      // 7b. 管理訊息權限：只有 clear 需要，沒有時只 WARN。
+      if (channelOk) {
+        try {
+          const access = await botChannelAccess(client, room, channel);
+          if (access.manageMessages) add('OK', '管理訊息', '有「管理訊息」權限（clear 可用）');
+          else add('WARN', '管理訊息', `bot 在這個頻道沒有「管理訊息」權限；只有 clear 需要，要用 clear 時${permissionFix()}`);
+        } catch (e) {
+          add('WARN', '管理訊息', `無法確認 bot 有沒有「管理訊息」權限（只有 clear 需要）：${e.message}`);
+        }
+      }
 
       // 8. webhook：頻道有問題（填錯、不屬於這個伺服器、討論串）時不要在那裡建立 webhook。
       if (!channelOk) add('WARN', 'webhook', '頻道檢查沒通過，略過（不在錯的頻道建立 webhook）');
