@@ -136,7 +136,12 @@ export async function run(ctx) {
   }
 
   // 空頻道用 '0'：不用本機時鐘，免得時鐘偏快時漏讀剛進房後別人發的訊息。
-  const latest = raws.length ? raws[raws.length - 1].id : '0';
+  // 但 bot 沒有讀取訊息歷史權限時，Discord 回的也是空陣列；用頻道的 last_message_id 分辨，免得之後補上權限時從頭重讀整個頻道。
+  let latest = raws.length ? raws[raws.length - 1].id : null;
+  if (!latest) {
+    const ch = await client.channel(room.channelId).catch(() => null);
+    latest = ch?.last_message_id || '0';
+  }
   const state = newAgent({
     name,
     vendor,
@@ -162,6 +167,7 @@ export async function run(ctx) {
   const content = buildMessage('JOIN', name, fields);
   const ids = await sendParts(ctx, state, [content]);
   recordOwnMessages(state, ids);
+  if (notes.length) state.lastNotes = notes;
   saveAgent(state);
   appendLog(room.channelId, { dir: 'out', agent: name, tag: 'JOIN', ids, content });
 

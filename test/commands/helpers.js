@@ -52,6 +52,9 @@ export async function setup({ room = {}, mock = {}, sop = true } = {}) {
       const child = spawn(process.execPath, [BIN, ...args], { env: childEnv, cwd: root, stdio: [stdin, 'pipe', 'pipe'] });
       let stdout = '';
       let stderr = '';
+      // 指定 utf8 解碼：中文剛好被切在兩個 chunk 之間時，直接字串相接會變成亂碼。
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
       child.stdout.on('data', (c) => (stdout += c));
       child.stderr.on('data', (c) => (stderr += c));
       const timer = setTimeout(() => {

@@ -31,6 +31,7 @@ export async function run(ctx) {
     body,
     files: ctx.values.file,
     requireBody: true,
+    userOptions: true,
     mutate: (s) => {
       s.lastProgressAt = new Date().toISOString();
     },

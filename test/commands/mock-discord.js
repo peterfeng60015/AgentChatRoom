@@ -87,6 +87,7 @@ export async function startMockDiscord(options = {}) {
     webhookId = null,
     username = null,
     referenceType,
+    type,
   } = {}) {
     const id = nextId();
     let a;
@@ -97,7 +98,7 @@ export async function startMockDiscord(options = {}) {
     const msg = {
       id,
       channel_id: cfg.channelId,
-      type: replyTo ? 19 : 0,
+      type: type ?? (replyTo ? 19 : 0),
       content,
       timestamp: timestamp ?? new Date().toISOString(),
       author: a,
@@ -113,15 +114,22 @@ export async function startMockDiscord(options = {}) {
     return msg;
   }
 
-  function addWebhook({ name = 'agentchat', token = `wh-token-${webhooks.length + 1}`, channelId = cfg.channelId } = {}) {
+  // token 做得和真的一樣長（約 68 字），測試「token 不能送進頻道」時才比得到。
+  function addWebhook({ name = 'agentchat', token = `wh-token-${webhooks.length + 1}-${'k'.repeat(56)}`, channelId = cfg.channelId } = {}) {
     const hook = { id: nextId(), type: 1, name, token, channel_id: channelId, guild_id: cfg.guildId };
     webhooks.push(hook);
     return hook;
   }
 
-  // 下一次（或接下來 times 次）符合條件的請求回指定的錯誤。
-  function fail({ method, path, status, body, times = 1, headers = {} }) {
-    faults.push({ method, path, status, body, times, headers });
+  // 下一次（或接下來 times 次）符合條件的請求回指定的錯誤；skip 是先放行幾次再開始失敗。
+  function fail({ method, path, status, body, times = 1, headers = {}, skip = 0 }) {
+    faults.push({ method, path, status, body, times, headers, skip });
+  }
+
+  // 下一次（或接下來 times 次）符合條件的請求先等 ms 毫秒再照常處理（模擬網路慢）。
+  const delays = [];
+  function delay({ method, path, ms, times = 1 }) {
+    delays.push({ method, path, ms, times });
   }
 
   function rateLimit({ method, path, retryAfter = 0.05, times = 1 } = {}) {
@@ -139,6 +147,10 @@ export async function startMockDiscord(options = {}) {
       (x) => x.times > 0 && (!x.method || x.method === method) && (!x.path || (x.path instanceof RegExp ? x.path.test(path) : x.path === path)),
     );
     if (!f) return null;
+    if (f.skip > 0) {
+      f.skip--;
+      return null;
+    }
     f.times--;
     return f;
   }
@@ -219,6 +231,13 @@ export async function startMockDiscord(options = {}) {
     if (!path.startsWith('/api/v10/')) return json(res, 404, { message: '404: Not Found', code: 0 });
     path = path.slice('/api/v10'.length);
 
+    const d = delays.find(
+      (x) => x.times > 0 && (!x.method || x.method === req.method) && (!x.path || x.path.test(path)),
+    );
+    if (d) {
+      d.times--;
+      await new Promise((r) => setTimeout(r, d.ms));
+    }
     const fault = takeFault(req.method, path);
     if (fault) return json(res, fault.status, fault.body ?? { message: `mock ${fault.status}` }, fault.headers);
 
@@ -258,9 +277,13 @@ export async function startMockDiscord(options = {}) {
           type: cfg.channelType,
           guild_id: cfg.channelGuildId ?? cfg.guildId,
           name: 'agent-room',
+          last_message_id: messages.length ? messages[messages.length - 1].id : null,
         });
       }
-      if (req.method === 'GET' && rest === '/messages') return json(res, 200, listMessages(url.searchParams));
+      // hideHistory：模擬 bot 沒有「讀取訊息歷史」權限時 Discord 回空陣列。
+      if (req.method === 'GET' && rest === '/messages') {
+        return json(res, 200, cfg.hideHistory ? [] : listMessages(url.searchParams));
+      }
       const one = rest.match(/^\/messages\/(\d+)$/);
       if (req.method === 'GET' && one) {
         const msg = messages.find((m) => m.id === one[1]);
@@ -295,6 +318,7 @@ export async function startMockDiscord(options = {}) {
     addMessage,
     addWebhook,
     fail,
+    delay,
     rateLimit,
     nextId,
     lastMessage: () => messages[messages.length - 1],

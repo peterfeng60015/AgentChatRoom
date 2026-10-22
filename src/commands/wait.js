@@ -3,7 +3,7 @@ import { compareSnowflake, snowflakeNow } from '../discord.js';
 import { ProtocolError, UserError } from '../errors.js';
 import { LEFT_TEXT, applyEach, buildMessage, reminders } from '../protocol.js';
 import { kindLabel, renderMessages, section } from '../render.js';
-import { appendLog, loadAgent, recordOwnMessages, updateAgent } from '../state.js';
+import { acquireWaitLock, appendLog, loadAgent, recordOwnMessages, updateAgent } from '../state.js';
 import { normalizeAll, phaseOf, publicMessage, requireAgent, roundInfo, summaryLine } from '../context.js';
 import { sendParts } from '../publish.js';
 
@@ -44,7 +44,15 @@ export async function run(ctx) {
   if (timeout > MAX_TIMEOUT) throw new UserError(`--timeout 範圍是 0 到 ${MAX_TIMEOUT} 秒`);
   const until = ctx.values.until ?? 'any';
   if (!UNTIL.includes(until)) throw new UserError(`--until 只接受 ${UNTIL.join('、')}`);
+  const release = acquireWaitLock(room.channelId, initial.name);
+  try {
+    return await waitLocked(ctx, room, initial, timeout, until);
+  } finally {
+    release();
+  }
+}
 
+async function waitLocked(ctx, room, initial, timeout, until) {
   // §5.4：只有 --timeout > 0 且不在 work 階段的 wait 才計無人回應的時間；開始時 emptyWaitSince 是 null 就設為現在。
   const timed = timeout > 0 && initial.phase !== 'work';
   const state = updateAgent(room.channelId, initial.name, (s) => {
@@ -89,6 +97,8 @@ export async function run(ctx) {
   let updated = updateAgent(room.channelId, state.name, (s) => {
     const fresh = batch.filter((m) => !s.cursor || compareSnowflake(m.id, s.cursor) > 0);
     ({ notes } = applyEach(s, fresh, room));
+    // §5.1：注意存進 lastNotes，status 可以再印一次；沒有新的就保留上一次。
+    if (notes.length) s.lastNotes = notes;
     if (!s.cursor || compareSnowflake(newCursor, s.cursor) > 0) s.cursor = newCursor;
   });
   if (batch.length) {

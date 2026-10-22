@@ -154,6 +154,13 @@ export function stateLines(state, room) {
   return lines;
 }
 
+// status 額外印的實際生效設定（§6.3 status）：語言、作業 repo（§5.5 的順序）與 base。
+export function effectiveLines(state, room) {
+  const f = state.topic?.fields || {};
+  const repo = f.repo || room.defaultRepo || '未指定，有 branch 分工時用目前目錄的 git repo';
+  return [`語言：${room.language}`, `作業 repo：${repo}`, `base：${f.base || room.defaultBase}`];
+}
+
 export function publicState(state, room) {
   return {
     name: state.name,
