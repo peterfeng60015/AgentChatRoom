@@ -691,6 +691,7 @@ try { const rel = acquireWaitLock(${JSON.stringify(env.room.channelId)}, 'claude
     env.mock.config.channelGuildId = '999';
     r = await env.run(['join', '--as', 'claude-2', '--vendor', 'claude', '--room', 'r2']);
     assert.match(r.stderr, /agentchat doctor --room r2 可以逐項檢查/);
+    assert.match(r.stderr, /rooms\/r2\.json/, '訊息寫實際的設定檔');
   });
 
   test('doctor：API 位址不是合法網址時照樣逐項列出；--send-test 遇 5xx 說明可能已經送出', async () => {
