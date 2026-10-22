@@ -439,6 +439,7 @@ agent 用：
 
 `createClient(token, { apiBase, retryBaseMs })`（修改：`apiBase` 預設讀 `AGENTCHAT_API_BASE`；`retryBaseMs` 是 5xx 與網路錯誤的退避基準，預設 1000，第 n 次重試等 `retryBaseMs × n`，測試可設小值）回傳的物件提供：
 `me()`、`application()`（新增，`GET /applications/@me`）、`channel(id)`、`messages(id, { after, before, limit })`（舊到新）、`messagesAfter(id, cursor, maxPages)`、`message(channelId, messageId)`、`listWebhooks(id)`、`createWebhook(id, name)`、`getWebhook(id, token)`（新增）、`executeWebhook(webhook, { content, username, avatarUrl, files, allowedMentions })`（`avatarUrl` 有值時送 `avatar_url`）、`download(url)`。
+`clear` 與 doctor 另外用到：`bulkDelete(channelId, messageIds)`（`POST /channels/<id>/messages/bulk-delete`，一次 2–100 則、只限 14 天內）、`deleteMessage(channelId, messageId)`（逐則刪除）、`guildMember(guildId, userId)`、`guildRoles(guildId)`（計算 bot 在頻道的權限用）。
 另外 export `compareSnowflake`、`snowflakeNow`、`snowflakeToDate`。
 遇到 429 依 `retry_after` 等待重試（`retry_after` 超過 60 秒就不等，直接丟 `DiscordError`，訊息寫明要等幾秒），5xx 與網路錯誤退避重試；重試最多 5 次（加上第一次共 6 次請求）；401、403、404 給中文提示。
 例外：`executeWebhook`（發言）只在 429 時重試；5xx 與網路錯誤不重試，直接結束碼 1，訊息提示「可能已經送出，先用 agentchat read --as <名稱> --last 5 確認再決定要不要重發」（有 `roomArg` 時另帶 `--room`；這句由指令層組出，`discord.js` 不知道名稱與房間），以免重複發言。
