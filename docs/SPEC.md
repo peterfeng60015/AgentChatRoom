@@ -401,7 +401,7 @@ agent 用：
 ### 7.2 `src/config.js`
 
 `TOOL_HOME`、`ENV_FILE`、`parseEnv(text)`、`loadEnv()`、`getToken()`、`roomFile(roomName)`、`loadRoom(roomName)`。
-`loadRoom` 回傳合併預設值（§3.1）後的物件，另加 `file` 欄位；缺必填欄位、JSON 不合法，或 `guildId`／`channelId`／`moderatorUserId` 不是純數字字串（寫成 JSON 數字會因超過 2^53 失準）時丟 `UserError`。
+`loadRoom` 回傳合併預設值（§3.1）後的物件，另加 `file`（設定檔路徑）與 `roomArg`（`--room` 給的名稱，沒給是 `null`；工具輸出提示指令時，`roomArg` 有值就帶上 `--room <名稱>`）兩個欄位；缺必填欄位、JSON 不合法，或 `guildId`／`channelId`／`moderatorUserId` 不是純數字字串（寫成 JSON 數字會因超過 2^53 失準）時丟 `UserError`。
 `TOOL_HOME` 在模組載入時決定，測試要先設環境變數再動態 import。
 
 ### 7.3 `src/state.js`
