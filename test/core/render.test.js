@@ -180,6 +180,13 @@ describe('renderMessage 的固定格式（§7.5，SOP 依賴它）', () => {
     assert.deepEqual(lines.slice(1).map((l) => l.trimEnd()), ['│ 第一行', '│', '│ 第三行']);
   });
 
+  test('\\r\\n、單獨 \\r、\\n 都當換行，每一行都加「│ 」', () => {
+    const m = msg({ timestamp: TS, content: 'a\r\nb\rc\nd' });
+    const lines = renderMessage(m, { as: 'claude-1' }).split('\n');
+    assert.deepEqual(lines.slice(1), ['│ a', '│ b', '│ c', '│ d']);
+    assert.ok(!renderMessage(m).includes('\r'));
+  });
+
   test('多則之間用一行 --- 分隔', () => {
     const a = msg({ id: '21', timestamp: TS, content: '第一則' });
     const b = msg({ id: '22', timestamp: TS, kind: 'moderator', author: 'Peter', authorRole: null, content: '第二則' });

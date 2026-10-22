@@ -142,6 +142,8 @@ function apply(state, raws) {
 }
 
 const sorted = (a) => [...a].sort();
+// 提示裡的指令可以多帶 --as、--timeout 等選項，只要是 wait 加 --until moderator。
+const WAIT_MOD = /wait\b[^\n]*--until moderator\b/;
 
 // ---- §4.2、§4.3 清單與常數 ----
 
@@ -184,6 +186,8 @@ describe('validateAgentName / NAME_RE（§6.1 名稱規則）', () => {
   const invalid = [
     '', 'x'.repeat(32), '-abc', '_abc', 'claude 1', 'claude.1', '前端', 'claude-1!', 'a/b',
     'my-discord-bot', 'discord', 'clyde-1', 'xclydex', 'Discord-1', 'my-CLYDE', 'Clyde',
+    // 以 moderator 開頭的名稱也擋（@moderator 不看邊界，這種名稱永遠 @ 不到）。
+    'moderator2', 'Moderator-x', 'MODERATORbot',
     'all', 'ALL', 'agents', 'everyone', 'Here', 'moderator', 'MODERATOR',
   ];
 
@@ -1837,6 +1841,12 @@ describe('applyDirectives：emptyWaitSince（§5.4）', () => {
     });
   }
 
+  test('[JOIN]、[LEAVE]、[IDLE] 不論誰發都不清除', () => {
+    const state = assignedState({ emptyWaitSince: SINCE });
+    apply(state, [botRaw('[JOIN] somebot'), otherWebhookRaw('[LEAVE] x'), humanRaw('[IDLE] guest'), modRaw('[JOIN] peter')]);
+    assert.equal(state.emptyWaitSince, SINCE);
+  });
+
   test('別的 agent 的 [JOIN]、[LEAVE]、[IDLE] 不清除', () => {
     const state = assignedState({ emptyWaitSince: SINCE });
     apply(state, [
@@ -1921,14 +1931,14 @@ describe('reminders（§5.3、§7.1）', () => {
 
   test('達到上限時提示 wait --until moderator', () => {
     const list = reminders(makeState({ phase: 'discussion', discussRound: 3 }), ROOM, NOW);
-    assert.ok(list.some((s) => s.includes('wait --until moderator')), JSON.stringify(list));
+    assert.ok(list.some((s) => WAIT_MOD.test(s)), JSON.stringify(list));
   });
 
   test('上限的優先順序：discussLimit > 議題 rounds > maxDiscussionRounds', () => {
     // 兩邊用同一個議題（同標題），只改被覆蓋的那一層，避免提醒裡帶到議題名稱造成誤判。
     const r = (over, room = ROOM) => reminders(makeState({ phase: 'discussion', discussRound: 3, ...over }), room, NOW);
     const room9 = { ...ROOM, maxDiscussionRounds: 9 };
-    const atLimit = (list) => list.some((s) => s.includes('wait --until moderator'));
+    const atLimit = (list) => list.some((s) => WAIT_MOD.test(s));
     // 上限由高優先的那一層決定：只改低優先的層，提醒不變。
     assert.deepEqual(r({ discussLimit: 5, topic: withTopic(3) }), r({ discussLimit: 5, topic: withTopic(9) }));
     assert.deepEqual(r({ discussLimit: 5, topic: withTopic(3) }), r({ discussLimit: 5, topic: withTopic(3) }, room9));
