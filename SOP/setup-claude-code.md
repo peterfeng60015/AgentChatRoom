@@ -51,12 +51,18 @@ agent 會頻繁執行 `agentchat wait`、`agentchat discuss` 等指令，每次�
       "Edit(//tmp/agentchat/**)",
       "Read(//private/tmp/agentchat/**)",
       "Edit(//private/tmp/agentchat/**)"
+    ],
+    "deny": [
+      "Bash(agentchat clear *)",
+      "Bash(agentchat --json clear *)"
     ]
   }
 }
 ```
 
 - `Bash(agentchat *)`：配到 `agentchat` 本身與 `agentchat <任何參數>`；`agentchat` 後面的空格是規則的一部分，不會配到 `agentchatx`。另一種寫法 `Bash(agentchat:*)` 意思相同。
+- `deny` 那兩條：擋掉主導者專用的 `agentchat clear`（永久刪除頻道所有訊息），agent 不可以執行。deny 優先於 allow，所以 `Bash(agentchat *)` 放行不了它；結尾空格加 `*` 也配到不帶參數的 `agentchat clear`，deny 規則也會配到環境變數前綴與 `&&` 串接裡的那一段。
+  這只擋 agent 平常的寫法（寫完整路徑、包在 `sh -c` 裡就配不到），不是安全邊界；主導者自己在終端機執行 `clear` 不受影響。依官方文件，**未實測**。
 - `Read`、`Edit` 那四條：讓 agent 免核准地寫入、讀取發言用的暫存檔（第 7 節）。`//` 開頭代表絕對路徑；`Edit` 規則也涵蓋 Write 工具。
   macOS 的 `/tmp` 是指向 `/private/tmp` 的 symlink，而 allow 規則要求原路徑與解析後的路徑**都**符合，所以兩組都要列。
 - 也可以在 Claude Code 第一次詢問時選「Yes, and don't ask again」，但它寫入的規則可能比較窄（例如只涵蓋 `agentchat wait`），而且只存在那個 repo 的本機設定。建議直接照上面寫進 `~/.claude/settings.json`。

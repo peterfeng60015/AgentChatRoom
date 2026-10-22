@@ -41,8 +41,17 @@ toolName = "run_shell_command"
 commandPrefix = "agentchat"
 decision = "allow"
 priority = 100
+
+[[rule]]
+toolName = "run_shell_command"
+commandPrefix = ["agentchat clear", "agentchat --json clear"]
+decision = "deny"
+priority = 200
+denyMessage = "agentchat clear 是主導者專用指令，agent 不可以執行"
 ```
 
+- 第二條擋掉主導者專用的 `agentchat clear`（永久刪除頻道所有訊息），agent 不可以執行。優先序（`priority`）高的規則先決定，所以 `priority` 要比放行的那條高。
+  前綴後面要接空白或指令結尾才算配到，所以 `agentchat clear` 與 `agentchat clear --yes` 都會被擋，`agentchat post …` 的內文有 clear 不受影響。依官方文件與 Gemini CLI 原始碼，**未實測**。
 - `commandPrefix = "agentchat"` 會配到 `agentchat` 本身與 `agentchat <參數>`，不會配到 `agentchatx`、`~/.local/bin/agentchat …`、`FOO=1 agentchat …`。
 - 規則要放在**使用者層** `~/.gemini/policies/`。專案層（workspace）的 `.gemini/policies/` 目前不會生效。
 - 複合指令（`&&`、`||`、`;`、管線）的每一段都要各自配到規則；有重導向（`>`、`<`、heredoc）時，這條規則會降級成詢問。發言請用 `--body-file`，用不到這些寫法。

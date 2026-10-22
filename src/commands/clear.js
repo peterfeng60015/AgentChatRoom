@@ -3,16 +3,17 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { snowflakeToDate } from '../discord.js';
 import { DiscordError, UserError } from '../errors.js';
+import { validateAgentName } from '../protocol.js';
 import { cleanText, oneLine } from '../render.js';
-import { STATE_DIR } from '../state.js';
+import { STATE_DIR, markCleared } from '../state.js';
 
 export const summary = '（主導者用）永久刪除房間頻道的所有訊息，並清掉本機各 agent 的狀態';
 export const usage = 'agentchat clear [--yes]';
 export const options = { yes: { type: 'boolean', default: false } };
 export const details = [
   '刪除頻道裡所有人的訊息（主導者、agent、其他人），無法復原；需要 bot 在頻道有「管理訊息」權限。',
-  '執行前要在終端機輸入頻道名稱確認；--yes 跳過確認（非終端機環境一定要帶）。agent 不可以執行這個指令，也不接受 --as。',
-  '刪完清掉本機 ~/.agentchat/agents/<頻道ID>/ 底下各 agent 的狀態檔與 wait 鎖，webhook 快取保留。',
+  '這是主導者專用指令，agent 不可以執行（也不接受 --as）。主導者在自己的終端機執行，會要求輸入頻道名稱確認；主導者自己的腳本裡才加 --yes 跳過確認。',
+  '刪完清掉本機 ~/.agentchat/agents/<頻道ID>/ 底下各 agent 的狀態檔與 wait 鎖，webhook 快取保留；logs/、downloads/ 仍留有被刪訊息的內容，要徹底清除請手動刪除。',
   '14 天內的訊息每批 100 則一起刪；更舊的逐則刪，數量多時會比較久。',
 ];
 
@@ -121,31 +122,44 @@ function askLine(stdin, prompt) {
 }
 
 // 清掉這台機器上本房各 agent 的狀態檔、wait 鎖與暫存檔（整個 agents/<頻道ID>/ 目錄），回傳清掉的 agent 名稱。
+// 之後為這些 agent（加上之前清過、還沒重新 join 的）留清除標記；寫標記失敗只回傳警告。
 function clearAgentStates(channelId) {
   const dir = path.join(STATE_DIR, 'agents', String(channelId));
   let files = [];
   try {
     files = fs.readdirSync(dir);
   } catch (e) {
-    if (e.code === 'ENOENT') return { dir, agents: [] };
+    if (e.code === 'ENOENT') return { dir, agents: [], markError: null };
     throw new UserError(`讀不到本機狀態目錄：${dir}（${e.code || e.message}）`);
   }
+  // 標記檔名由名稱決定，檔案裡的名稱不合法（壞掉或被改過）就改用檔名，免得寫到目錄外。
+  const nameIn = (f, ext) => {
+    const stem = f.slice(0, -ext.length);
+    try {
+      const name = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')).name;
+      return typeof name === 'string' && !validateAgentName(name) ? name : stem;
+    } catch {
+      return stem;
+    }
+  };
   const agents = files
     .filter((f) => f.endsWith('.json'))
-    .map((f) => {
-      try {
-        return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')).name || f.slice(0, -5);
-      } catch {
-        return f.slice(0, -5);
-      }
-    })
+    .map((f) => nameIn(f, '.json'))
     .sort();
+  const marked = new Set(agents);
+  for (const f of files.filter((f) => f.endsWith('.cleared'))) marked.add(nameIn(f, '.cleared'));
   try {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); // 別的行程剛好在目錄裡建鎖檔時重試
   } catch (e) {
     throw new UserError(`清除本機狀態目錄失敗：${dir}（${e.code || e.message}）`);
   }
-  return { dir, agents };
+  let markError = null;
+  try {
+    markCleared(channelId, [...marked]);
+  } catch (e) {
+    markError = e.code || e.message;
+  }
+  return { dir, agents, markError };
 }
 
 export async function run(ctx) {
@@ -175,7 +189,9 @@ export async function run(ctx) {
   if (!ctx.values.yes) {
     const expected = String(channel.name ?? room.channelId);
     if (!ctx.stdin?.isTTY) {
-      throw new UserError(`clear 會永久刪除 #${name} 的所有訊息，要在終端機輸入頻道名稱確認；非互動環境請加 --yes`);
+      throw new UserError(
+        `clear 是主導者專用指令，agent 不可以執行；主導者請在自己的終端機執行（會要求輸入頻道名稱確認），或在自己的腳本裡加 --yes`,
+      );
     }
     const answer = await askLine(
       ctx.stdin,
@@ -250,6 +266,9 @@ export async function run(ctx) {
       ? `已清除本機 ${cleared.agents.length} 個 agent 的狀態檔與 wait 鎖（${cleared.agents.map(oneLine).join('、')}）：${cleared.dir}；webhook 快取保留`
       : `本機沒有這個房間的 agent 狀態（${cleared.dir}）；webhook 快取保留`,
   );
+  if (cleared.markError) {
+    text.push(`警告：清除標記寫入失敗（${cleared.markError}），還在跑的 agent 下一個指令會被提示 join 而不是停下來`);
+  }
   text.push('agent 在別台機器時，那台的狀態不會被清；要讓 agent 回來，叫它重新 join（不要帶 --resume）');
   return {
     text,
@@ -264,6 +283,7 @@ export async function run(ctx) {
       failedIds,
       clearedAgents: cleared.agents,
       stateDir: cleared.dir,
+      markError: cleared.markError,
     },
     code: failed ? 1 : 0,
     error: failed ? `有 ${failed} 則訊息刪除失敗` : undefined,

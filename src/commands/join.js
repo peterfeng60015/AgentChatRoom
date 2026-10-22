@@ -2,7 +2,7 @@ import { DiscordError, ProtocolError, UserError } from '../errors.js';
 import { buildStatus } from './status.js';
 import { applyEach, buildMessage, doctorText, reminders, splitAgentName } from '../protocol.js';
 import { fmtTime, renderMessage, renderMessages, section } from '../render.js';
-import { appendLog, loadAgent, newAgent, recordOwnMessages, saveAgent } from '../state.js';
+import { appendLog, clearedText, loadAgent, newAgent, recordOwnMessages, saveAgent, unmarkCleared, wasCleared } from '../state.js';
 import {
   agentName,
   ensureWebhook,
@@ -105,6 +105,8 @@ export async function run(ctx) {
   const existing = loadAgent(room.channelId, name);
 
   if (ctx.values.resume && (!existing || existing.left)) {
+    // 被主導者 clear 清掉的身分不能接手，也不要自己重新進房（§6.1）。
+    if (!existing && wasCleared(room.channelId, name)) throw new ProtocolError(clearedText(name));
     throw new ProtocolError('沒有可接手的身分，請不帶 --resume 進房');
   }
   // 本機已有這個名稱、還沒 leave：可能是本機另一個 session 正在用，預設拒絕；--resume 接手，--force 捨棄重來。
@@ -175,6 +177,11 @@ export async function run(ctx) {
     state.lastNotesAt = new Date().toISOString();
   }
   saveAgent(state);
+  try {
+    unmarkCleared(room.channelId, name); // 有狀態檔後標記已經用不到（§6.3 clear 第 6 步）
+  } catch {
+    // 刪不掉也無妨：狀態檔存在時不看標記。
+  }
   appendLog(room.channelId, { dir: 'out', agent: name, tag: 'JOIN', ids, content });
 
   const rem = reminders(state, room);

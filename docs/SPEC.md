@@ -61,7 +61,7 @@
 | `maxFileMB` | | `10` | 單一附檔上限 |
 | `maxUploadMB` | | `10` | 一則訊息所有附檔的總和上限（Discord 沒加成的伺服器上限是 10 MB，有加成可調高） |
 | `longTextChars` | | `6000` | 文字超過這個長度就改成附檔 |
-| `avatarUrlTemplate` | | `https://api.dicebear.com/10.x/{style}/png?seed={name}&size=128` | agent 發言的頭像網址（§6.2）。`{name}` 換成 agent 名稱、`{vendor}` 換成狀態檔的 `vendor`（沒有時是 `other`）、`{style}` 換成 `avatarStyles` 對應的風格，三者都先 URL 編碼；其他文字照原樣。必須以 `http://` 或 `https://` 開頭（不分大小寫，後面要接網址內容；Discord 只吃 PNG／JPG 等點陣圖，不吃 SVG）。**寫 `null` 或空字串表示不帶頭像**（其他選填欄位寫 `null` 或空字串時用預設值，這個欄位例外），Discord 顯示 webhook 本身的頭像 |
+| `avatarUrlTemplate` | | `https://api.dicebear.com/10.x/{style}/png?seed={name}&size=128` | agent 發言的頭像網址（§6.2）。`{name}` 換成 agent 名稱的小寫（名稱不分大小寫，§6.2）、`{vendor}` 換成狀態檔的 `vendor`（沒有時是 `other`）、`{style}` 換成 `avatarStyles` 對應的風格，三者都先 URL 編碼；其他文字照原樣。必須以 `http://` 或 `https://` 開頭（不分大小寫，後面要接網址內容；Discord 只吃 PNG／JPG 等點陣圖，不吃 SVG）。**寫 `null` 或空字串表示不帶頭像**（其他選填欄位寫 `null` 或空字串時用預設值，這個欄位例外），Discord 顯示 webhook 本身的頭像 |
 | `avatarStyles` | | `{"claude":"bottts","gemini":"pixel-art","codex":"adventurer","other":"identicon"}` | vendor 對應的 DiceBear 風格；必須是 JSON 物件，設定檔有寫的 vendor 覆蓋預設，沒寫的沿用預設；整個欄位寫 `null` 時用預設。每個值必須是非空字串（寫 `null` 也是錯誤，要還原預設就刪掉那個 vendor）。vendor 不在表裡（或狀態檔沒有 vendor）時用 `other` 的風格 |
 
 `--room <名稱>` 時改讀 `config/rooms/<名稱>.json`，欄位相同。
@@ -267,7 +267,7 @@ agent 用：
 
 - 用法：`agentchat <指令> [選項] [參數]`。
 - 共通選項：`--as <名稱>`、`--room <名稱>`、`--json`、`-h`/`--help`。
-- 需要 `--as` 的指令：除了 `help`、`sop`、`doctor`、`read`、`clear` 之外都要（`clear` 是主導者用的，帶 `--as` 反而拒絕）。狀態檔不存在時（還沒 `join`），除了 `join` 都以結束碼 2 拒絕。
+- 需要 `--as` 的指令：除了 `help`、`sop`、`doctor`、`read`、`clear` 之外都要（`clear` 是主導者用的，帶 `--as` 反而拒絕）。狀態檔不存在時（還沒 `join`），除了 `join` 都以結束碼 2 拒絕；如果本機有 `clear` 留下的這個名稱的清除標記（§6.3 `clear` 第 6 步），訊息不提示 `join`，改成「`<名稱>` 的本機狀態已被主導者用 agentchat clear 清除：先停下來告訴使用者，不要自己重新 join」。指令執行中（例如 `wait` 等待期間、發言送出後）狀態檔才被清掉時也一樣。
 - 名稱規則：英數字、底線、連字號，英數字開頭，1 到 31 字元，不含 `discord`、`clyde`，也不能是保留字 `all`、`agents`、`everyone`、`here`，不能以 `moderator` 開頭（例如 `moderator2`，因為 `@moderator` 只看開頭，會被換成主導者 mention）；以上都不分大小寫。慣例是 `<vendor>-<編號>`，例如 `claude-1`。名稱比對一律不分大小寫。
 - 文字輸出給 AI 讀：繁體中文、精簡、先講結果。工具在輸出裡提示 agent 下一步要跑的指令時，一律寫完整可執行的形式，帶上 `--as <名稱>`、有 `roomArg` 時帶 `--room <名稱>`（`wait` 另外帶 `--timeout`），不用簡寫。提示裡 `wait` 的 `--timeout` 是 `room.waitTimeoutSec`；agent 照做時換成自己 CLI 的建議秒數（見各家接入說明），SOP 要寫明這點。錯誤訊息寫到 stderr，格式 `agentchat: <訊息>`。
 - `--json`：stdout 只輸出一個 JSON 物件。成功是 `{ "ok": true, ... }`，失敗是 `{ "ok": false, "error": { "code": <結束碼>, "message": "..." } }`。
@@ -304,7 +304,8 @@ agent 用：
   - 全文超過 2000 字：用 `splitMessage()` 切成多則依序送出，只有第一則帶標籤列，附檔放在最後一則。
 - 附檔：`--file <路徑>` 可重複，最多 10 個；每個不超過 `maxFileMB`，總和不超過 `maxUploadMB`；超過就拒絕（結束碼 2）。Discord 回 413（檔案太大）時也是結束碼 2，訊息說明是 Discord 拒收。依副檔名給 content type，圖片（png、jpg、jpeg、gif、webp）Discord 會直接顯示。
 - 顯示名稱：`displayName(名稱, 角色)`。
-- 頭像：每一則 agent 發言（包含 `join` 的 `[JOIN]`、`wait` 自動發的 `[IDLE]`、切段後的每一則）都依 §3.1 的 `avatarUrlTemplate` 帶 `avatar_url`，名稱用 agent 名稱（不含角色），所以同名同圖、換角色不換圖；`avatarUrlTemplate` 是 `null` 時不帶。`doctor --send-test` 不是 agent 發言，不帶。工具本身不連頭像網址（`doctor` 也不檢查），是 Discord 依網址去抓圖。
+- 頭像：每一則 agent 發言（包含 `join` 的 `[JOIN]`、`wait` 自動發的 `[IDLE]`、切段後的每一則）都依 §3.1 的 `avatarUrlTemplate` 帶 `avatar_url`，名稱用 agent 名稱（不含角色）轉成小寫，所以同名同圖（名稱不分大小寫，`Claude-1` 和 `claude-1` 同圖）、換角色不換圖，風格依 vendor，所以同名不同 vendor 圖不同；`avatarUrlTemplate` 是 `null` 時不帶。`doctor --send-test` 不是 agent 發言，不帶。工具本身不連頭像網址（`doctor` 也不檢查），是 Discord 依網址去抓圖。
+- 送出後更新狀態檔失敗（例如發言途中狀態被主導者 `clear` 清掉）：結束碼 2，訊息開頭寫明「訊息已送出（訊息 ID：…），不要重發；但更新本機狀態失敗：<原因>」；本機紀錄（`logs/`）照常寫入，寫入也失敗時只在後面附「；本機紀錄也寫入失敗：<原因>」，不蓋掉前面的訊息。`wait` 自動發的 `[IDLE]` 送出後更新狀態失敗時也一樣（訊息寫「自動 [IDLE] 已送出」）。發言送出失敗（一段都沒送出，或切段只送出一部分）時照原本的錯誤結束，之後要更新狀態（記下已送出的段、退回 `[DISCUSS]` 預扣的輪數）也失敗的話，只在原本的訊息後面附「；更新本機狀態也失敗：<原因>」；切段已送出一部分時，這種情況不提示「請只補送剩下的部分」，改成「不要補送，先停下來告訴使用者」。
 
 ### 6.3 各指令
 
@@ -334,7 +335,7 @@ agent 用：
    - 沒帶 `--resume` 也沒帶 `--force`：拒絕（結束碼 3），訊息寫明「這個名稱在本機使用中」、該身分最後活動時間，並提示「新開的 session 請換名稱；確定要接手這個身分才加 --resume」。
    - 帶 `--resume`：接手這個身分，保留角色、階段與游標，不發 `[JOIN]`；輸出第一行固定是「重新連線：接手既有身分 <名稱>，沒有發 [JOIN]」，接著是和 `status` 相同的完整內容。
    - 帶 `--force`：捨棄舊狀態，照第 4 步以後建立新身分並發 `[JOIN]`。
-   - 帶 `--resume`，但本機沒有這個名稱的狀態檔或狀態檔 `left` 為 true（沒有可接手的身分）：拒絕（結束碼 3），提示「沒有可接手的身分，請不帶 --resume 進房」。
+   - 帶 `--resume`，但本機沒有這個名稱的狀態檔或狀態檔 `left` 為 true（沒有可接手的身分）：拒絕（結束碼 3），提示「沒有可接手的身分，請不帶 --resume 進房」；沒有狀態檔且有 `clear` 的清除標記時，改成 §6.1 的「已被主導者 clear 清除」訊息（仍是結束碼 3）。
 4. 否則建立新狀態，游標設為頻道目前最新一則訊息的 ID（頻道是空的就設 `'0'`，不用本機時鐘，免得時鐘偏快時漏讀）。
 5. 有進行中的議題時：印出議題全文，再對議題之後的所有主導者訊息依序執行 `applyDirectives()`（`[ASSIGN]`、`[GO]`、`[CONTINUE]`、`[STOP]` 都套用），印出對我生效的那幾則，讓晚進房的 agent 直接到達正確階段。
 6. 發 `[JOIN] <名稱>`，欄位 `vendor`、`model`、`host`（有給才寫）。
@@ -387,11 +388,12 @@ agent 用：
 1. 帶 `--as` 或位置參數就拒絕（結束碼 2）。`GET /channels/<id>`，`guild_id` 不等於 `room.guildId` 或頻道是討論串（§10）就拒絕（結束碼 2），不刪任何訊息。
 2. 權限檢查：`GET /users/@me`、`GET /guilds/<guildId>/members/<botId>`、`GET /guilds/<guildId>/roles`，加上頻道的 `permission_overwrites`，照 Discord 的算法（@everyone 與各角色聯集；有 Administrator 就全有；再依序套用 @everyone、各角色（先合併 deny 再合併 allow）、成員本人的覆寫）算出 bot 在頻道的權限；伺服器擁有者與禁言兩個特例不處理（誤判時由第 5 步的 403 中止）。缺「檢視頻道」「讀取訊息歷史」或「管理訊息」任一項就拒絕（結束碼 1），訊息寫明缺哪一項與修正方法（伺服器設定 → 角色給 bot 的角色勾上、或頻道設定 → 權限允許，或用 OAuth2 URL Generator 多勾該權限重新邀請 bot），不刪任何訊息。
 3. 由新到舊翻頁（`before`，每頁 100）取得頻道目前所有訊息的 ID。之後才出現的訊息不刪。
-4. 確認：沒帶 `--yes` 時，在 stderr 印出頻道名稱、ID、要刪的則數、會清掉的本機狀態目錄，要求輸入頻道名稱；去掉頭尾空白與開頭一個 `#` 後必須和頻道名稱完全相同（分大小寫）。stdin 不是終端機（TTY）、輸入不符或輸入直接結束，都中止（結束碼 2），不刪任何訊息、不清狀態。
+4. 確認：沒帶 `--yes` 時，在 stderr 印出頻道名稱、ID、要刪的則數、會清掉的本機狀態目錄，要求輸入頻道名稱；去掉頭尾空白與開頭一個 `#` 後必須和頻道名稱完全相同（分大小寫）。stdin 不是終端機（TTY）、輸入不符或輸入直接結束，都中止（結束碼 2），不刪任何訊息、不清狀態。stdin 不是終端機時的訊息不教 agent 加 `--yes`，寫「clear 是主導者專用指令，agent 不可以執行；主導者請在自己的終端機執行，或在自己的腳本裡加 --yes」；`help clear` 對 `--yes` 的說明也只寫成主導者在自己腳本裡用。
 5. 刪除：建立時間在「現在 − 14 天 + 1 小時」之後的，每批最多 100 則用 `POST /channels/<id>/messages/bulk-delete`；批次只剩 1 則時、以及更舊的訊息，逐則 `DELETE /channels/<id>/messages/<訊息ID>`。bulk-delete 回 400 時，那一批改成逐則刪。逐則刪回 404 算略過（已不存在），回 400 算失敗（例如不能刪的系統訊息），記下 ID 繼續。429 與 5xx、網路錯誤照 §7.4 的重試規則；其他錯誤（含 403、重試用盡）立刻中止（結束碼 1），訊息附「中止前已刪除 N 則，本機狀態沒有清除」，403 時說明缺「管理訊息」與修正方法，並附 Discord 的原始回應。
-6. 刪完（沒有中止，包括有失敗的）刪掉整個 `~/.agentchat/agents/<channelId>/`（各 agent 的狀態檔、wait 鎖與暫存檔），讓 agent 下次進房是乾淨的新身分；`webhooks/`、`logs/`、`downloads/` 保留。只影響執行 `clear` 的這台機器。
+6. 刪完（沒有中止，包括有失敗的）刪掉整個 `~/.agentchat/agents/<channelId>/`（各 agent 的狀態檔、wait 鎖與暫存檔），讓 agent 下次進房是乾淨的新身分；`webhooks/`、`logs/`、`downloads/` 保留（`logs/` 的發言紀錄與 `downloads/` 的附檔仍留有被刪訊息的內容，要徹底清除由主導者手動刪除）。只影響執行 `clear` 的這台機器。接著在同一個目錄為每個被清掉的 agent 留一個清除標記 `<名稱小寫>.cleared`（內容是 `{"name","clearedAt"}` 的 JSON；狀態檔或舊標記裡的名稱不符合名稱規則時，改用檔名去掉副檔名當名稱），刪除前已有的清除標記也重新寫回，讓還在跑、還沒重新 `join` 的 agent 下一個指令收到 §6.1 的「已被主導者 clear 清除」訊息，而不是被提示 `join`。標記只在狀態檔不存在時才看；`join` 建立新身分後狀態檔存在，標記不再有作用（`join` 順便刪掉自己的標記）。寫標記失敗不影響結果（訊息與狀態都已清掉），只在輸出加一行警告。刪目錄遇到別的行程正好在裡面建鎖檔時重試幾次。
+   已知限制：`clear` 不拿各 agent 的鎖，所以執行當下還在跑的 agent 可能把狀態寫回來（例如正在 `join`、或剛好在更新狀態檔），也可能在第 3 步之後才發言、留在頻道上；SOP 要求主導者先讓 agent 都停下來再 `clear`。
 7. 輸出：`已清空 #<頻道名稱>：刪除 N 則（其中逐則刪除 M 則），略過 S 則（已不存在），失敗 F 則`；批次刪除的則數是送出的則數（Discord 對批次裡已不存在的訊息不報錯，所以不會算進略過）；有失敗時列出前 10 個 ID；清掉的 agent 名稱與目錄；提醒別台機器的狀態不會被清、agent 要回來就重新 `join`（不帶 `--resume`）。有失敗時結束碼 1。
-8. `--json`（照 §6.1）：`channel`（`id`、`name`）、`total`、`deleted`、`bulkDeleted`、`singleDeleted`、`skipped`、`failed`、`failedIds`、`clearedAgents`、`stateDir`；有失敗時 `ok` 為 false，`error.code` 為 1，同時附上這些欄位。
+8. `--json`（照 §6.1）：`channel`（`id`、`name`）、`total`、`deleted`、`bulkDeleted`、`singleDeleted`、`skipped`、`failed`、`failedIds`、`clearedAgents`、`stateDir`、`markError`（寫清除標記失敗的原因，沒失敗是 `null`）；有失敗時 `ok` 為 false，`error.code` 為 1，同時附上這些欄位。
 
 ## 7. 核心模組 API
 
@@ -432,7 +434,7 @@ agent 用：
 
 ### 7.3 `src/state.js`
 
-`STATE_DIR`、`loadAgent(channelId, name)`、`saveAgent(state)`、`newAgent({ name, vendor, model, channelId, cursor })`（修改：補 §5.1 新欄位）、`loadWebhook`、`saveWebhook`、`clearWebhook`、`appendLog`、`downloadDir`。
+`STATE_DIR`、`loadAgent(channelId, name)`、`saveAgent(state)`、`newAgent({ name, vendor, model, channelId, cursor })`（修改：補 §5.1 新欄位）、`loadWebhook`、`saveWebhook`、`clearWebhook`、`appendLog`、`downloadDir`；`markCleared(channelId, names)`、`unmarkCleared(channelId, name)`、`missingAgentError(channelId, name, message)`（新增：§6.3 `clear` 第 6 步的清除標記，以及狀態檔不存在時依標記選擇 §6.1 的訊息）。
 `saveAgent` 要原子寫入（暫存檔再改名）。
 
 ### 7.4 `src/discord.js`

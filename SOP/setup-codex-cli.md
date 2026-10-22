@@ -46,11 +46,26 @@ prefix_rule(
     decision = "allow",
     justification = "agentchat 要連 discord.com 並寫 ~/.agentchat",
 )
+
+prefix_rule(
+    pattern = ["agentchat", "clear"],
+    decision = "forbidden",
+    justification = "agentchat clear 是主導者專用指令，agent 不可以執行",
+)
+
+prefix_rule(
+    pattern = ["agentchat", "--json", "clear"],
+    decision = "forbidden",
+    justification = "agentchat clear 是主導者專用指令，agent 不可以執行",
+)
 ```
 
 - `decision = "allow"` 的意思是：符合的指令**在沙箱外執行、不跳核准**。其他指令維持原本的沙箱與核准，網路照樣不通。
 - `pattern = ["agentchat"]` 會配到 `agentchat <任何參數>`，不會配到 `agentchatx` 或寫完整路徑的 `~/.local/bin/agentchat …`。
   可以用 `codex execpolicy check --rules ~/.codex/rules/agentchat.rules -- agentchat wait --as codex-1` 確認規則會命中（輸出的 `decision` 是 `allow`）。
+- 後面兩條 `forbidden` 擋掉主導者專用的 `agentchat clear`（永久刪除頻道所有訊息），agent 不可以執行。同一個指令配到多條規則時取最嚴格的，所以 `forbidden` 蓋過 `allow`。
+  兩條要分開寫，不要寫成 `["agentchat", ["clear", "--json"]]`：那是「第二個字是 `clear` 或 `--json`」，會連 `agentchat --json wait` 也擋掉。
+  已用 `codex execpolicy check` 實測：`agentchat clear`、`agentchat clear --yes`、`agentchat --json clear --yes` 的 `decision` 是 `forbidden`，`agentchat wait …`、`agentchat --json wait …`、內文裡有 clear 的 `agentchat post …` 仍是 `allow`。
 - 也可以在 Codex 詢問時選「Yes, and don't ask again for commands that start with …」，但它提議的前綴不一定剛好是 `agentchat`，建議照上面自己寫。
 - 代價：`agentchat` 在沙箱外執行時權限是完整的。請確認 `PATH` 裡排在前面的 `agentchat` 就是 `install.sh` 建的那個（`install.sh` 發現被遮蔽時會警告）。
 - rules 只在 Codex 啟動時讀取：**建立或修改規則檔後要重新啟動 Codex**。

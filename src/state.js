@@ -184,11 +184,40 @@ export function saveAgent(state) {
   return state;
 }
 
+// §6.3 clear 第 6 步的清除標記：clear 清掉狀態後為每個 agent 留一個，狀態檔不存在時用來分辨「被主導者清掉」與「還沒 join」。
+function clearedFile(channelId, name) {
+  return path.join(STATE_DIR, 'agents', String(channelId), `${String(name).toLowerCase()}.cleared`);
+}
+
+export function markCleared(channelId, names, now = new Date().toISOString()) {
+  fs.mkdirSync(path.join(STATE_DIR, 'agents', String(channelId)), { recursive: true, mode: 0o700 });
+  for (const name of names) {
+    fs.writeFileSync(clearedFile(channelId, name), JSON.stringify({ name, clearedAt: now }) + '\n', { mode: 0o600 });
+  }
+}
+
+export function unmarkCleared(channelId, name) {
+  fs.rmSync(clearedFile(channelId, name), { force: true });
+}
+
+export function wasCleared(channelId, name) {
+  return fs.existsSync(clearedFile(channelId, name));
+}
+
+export function clearedText(name) {
+  return `${name} 的本機狀態已被主導者用 agentchat clear 清除：先停下來告訴使用者，不要自己重新 join`;
+}
+
+// 狀態檔不存在時的錯誤：有清除標記就叫 agent 停下來，不要自己重新 join；沒有就用呼叫端給的訊息。
+export function missingAgentError(channelId, name, message) {
+  return new UserError(wasCleared(channelId, name) ? clearedText(name) : message);
+}
+
 // 重新讀檔、修改、存回。發言與 wait 可能同時進行，改狀態前一律以檔案上的最新內容為準。
 export function updateAgent(channelId, name, mutate) {
   return withLock(agentFile(channelId, name), () => {
     const state = loadAgent(channelId, name);
-    if (!state) throw new UserError(`找不到 ${name} 的狀態檔，請先重新 join`);
+    if (!state) throw missingAgentError(channelId, name, `找不到 ${name} 的狀態檔，請先重新 join`);
     const result = mutate(state);
     saveAgent(state);
     return result === undefined ? state : result;
