@@ -58,6 +58,7 @@ const DEFAULTS = {
   idleLimitMin: 60,
   progressReminderMin: 15,
   maxFileMB: 10,
+  maxUploadMB: 10,
   longTextChars: 6000,
 };
 

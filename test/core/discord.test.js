@@ -230,6 +230,58 @@ describe('executeWebhook / download', () => {
     assert.ok(body.includes('[INFO] 附檔'));
   });
 
+  // §7.4 例外：發言只在 429 重試；5xx 與網路錯誤可能已經送出，重送會重複發言。
+  for (const [label, fail] of [
+    ['5xx', (rec, res) => sendJson(res, 502, { message: 'bad gateway' })],
+    ['網路錯誤', (rec) => rec.req.socket.destroy()],
+  ]) {
+    test(`executeWebhook 遇到${label}：不重試，提示先用 read --last 5 確認`, async () => {
+      serve(fail);
+      const err = await errorOf(client().executeWebhook(HOOK, { content: '[INFO] hi', username: 'claude-1', allowedMentions: { parse: [] } }));
+      isDiscordError()(err);
+      assert.equal(requests.length, 1);
+      assert.ok(err.message.includes('agentchat read --last 5'), err.message);
+    });
+  }
+
+  test('executeWebhook 遇到 429：依 retry_after 重試', async () => {
+    let n = 0;
+    serve((rec, res) => {
+      n += 1;
+      if (n === 1) sendJson(res, 429, { message: 'rate limited', retry_after: 0.01 });
+      else hookServer(rec, res);
+    });
+    const msg = await client().executeWebhook(HOOK, { content: '[INFO] hi', username: 'claude-1', allowedMentions: { parse: [] } });
+    assert.equal(msg.id, '555');
+    assert.equal(requests.length, 2);
+  });
+
+  test('executeWebhook 帶附檔遇到 429：重送時仍帶著檔案內容', async () => {
+    let n = 0;
+    serve((rec, res) => {
+      n += 1;
+      if (n === 1) sendJson(res, 429, { message: 'rate limited', retry_after: 0.01 });
+      else hookServer(rec, res);
+    });
+    const files = [{ filename: 'note.txt', data: Buffer.from('hello again'), contentType: 'text/plain' }];
+    const msg = await client().executeWebhook(HOOK, { content: '[INFO] 附檔', username: 'claude-1', files, allowedMentions: { parse: [] } });
+    assert.equal(msg.id, '555');
+    assert.equal(requests.length, 2);
+    assert.ok(requests[1].body.toString().includes('hello again'));
+  });
+
+  test('executeWebhook 已回 200 但內文讀到一半斷線：不重試，提示先用 read --last 5 確認', async () => {
+    serve((rec, res) => {
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': '100' });
+      res.write('{"id":"55');
+      setTimeout(() => rec.req.socket.destroy(), 20);
+    });
+    const err = await errorOf(client().executeWebhook(HOOK, { content: '[INFO] hi', username: 'claude-1', allowedMentions: { parse: [] } }));
+    isDiscordError()(err);
+    assert.equal(requests.length, 1);
+    assert.ok(err.message.includes('agentchat read --last 5'), err.message);
+  });
+
   test('download 回傳檔案內容的 Buffer', async () => {
     const bytes = Buffer.from([0, 1, 2, 250, 255]);
     serve((rec, res) => {
@@ -275,7 +327,7 @@ describe('webhook 端點出錯時，錯誤訊息與 stack 都不含 webhook toke
   ];
   const failures = [
     ['404', (rec, res) => sendJson(res, 404, { message: 'Unknown Webhook', code: 10015 })],
-    ['5xx 重試用盡', (rec, res) => sendJson(res, 502, { message: 'bad gateway' })],
+    ['5xx', (rec, res) => sendJson(res, 502, { message: 'bad gateway' })],
     ['429 超過 60 秒', (rec, res) => sendJson(res, 429, { message: 'rate limited', retry_after: 61 })],
     ['連線被切斷', (rec) => rec.req.socket.destroy()],
   ];
