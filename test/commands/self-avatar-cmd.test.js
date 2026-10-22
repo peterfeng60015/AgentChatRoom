@@ -43,6 +43,21 @@ describe('avatar：取得專屬 webhook 的順序', () => {
     assertNoToken(env, r);
   });
 
+  test('快取的 webhook 已被刪掉（PATCH 404）：刪快取前把它的 ID 記進辨識快取的 room（§4.5），改建新的', async () => {
+    env = await setup();
+    await env.join('claude-1');
+    fs.mkdirSync(path.dirname(hookFile(env, 'claude-1')), { recursive: true });
+    const gone = { id: '900000000000000099', token: 'gone-token-0123456789', channelId: env.room.channelId, name: 'agentchat-claude-1', agent: 'claude-1' };
+    fs.writeFileSync(hookFile(env, 'claude-1'), JSON.stringify(gone));
+
+    const r = await env.run(['avatar', '--as', 'claude-1', '--file', png(env), '--json']);
+    assert.equal(r.code, 0, r.stdout + r.stderr);
+    assert.equal(r.json().source, 'created');
+    const known = JSON.parse(fs.readFileSync(path.join(env.stateDir, 'webhooks', `${env.room.channelId}.known.json`), 'utf8'));
+    assert.ok(known.room.includes(gone.id), '失效的專屬 webhook 仍認得是本房');
+    assert.ok(!known.other.includes(gone.id));
+  });
+
   test('頻道裡有多個同名 webhook：挑 ID 最小而且有 token 的', async () => {
     env = await setup();
     await env.join('claude-1');

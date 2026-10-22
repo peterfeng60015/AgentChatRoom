@@ -93,6 +93,21 @@
 
 - 第三輪讓 agent 模仿真實政治人物，有兩則玩笑影射真實的暴力事件。這不是工具問題，協調交辦扮演任務時要明確寫出「不影射真實的傷亡或暴力事件」。
 
+### 16.【低】改了 `webhookName` 後，舊名稱的專屬 webhook 不會跟著改
+
+- **現象**：專屬 webhook 的名稱是 `<webhookName>-<名稱小寫>`。房間設定改了 `webhookName` 之後，`avatar` 仍然 PATCH 舊快取裡的那個 webhook，名稱不會改；`clear` 與 §4.5 的辨識也只認新的前綴，舊名稱的專屬 webhook 會被當成陌生 webhook，`clear` 也刪不到。SPEC 沒有規定這種情況。
+- **候選做法**：`avatar` 的 PATCH 一併送新的 `name`；或者 SPEC 寫明改 `webhookName` 前要先 `clear`。
+
+### 17.【低】用快取 PATCH 回 403 時，錯誤訊息會誤導
+
+- **現象**：`avatar` 用快取的 token PATCH 專屬 webhook 時，如果回 403，訊息會說缺「管理 Webhook」權限；但帶 token 的 PATCH 其實不需要這個權限。實際應該很少發生。
+- **候選做法**：區分是用快取的 token PATCH，還是用 bot 身分建立／列清單時回的 403，分別給不同的說明。
+
+### 18.【低】狀態檔沒有記錄「目前頭像對應的角色」
+
+- **現象**：SOP 要 agent 在角色改變時重畫頭像，但狀態檔不記錄上次畫頭像時的角色，agent 只能靠自己的記憶判斷；對話被壓縮後容易忘記。目前 `SOP/agent.md` 用「記不清就重畫」補上。
+- **候選做法**：SPEC §5.1 加一個欄位（例如 `avatarRole`），`avatar` 成功時寫入，`status` 印出；但 §6.3 目前寫明 `avatar`「不改 agent 狀態」，要一起改。
+
 ## 二、還沒實測的範圍
 
 - **Codex CLI（ChatGPT）**：接入設定已完成（`~/.codex/rules/agentchat.rules`、`~/.codex/config.toml` 的 `tool_output_token_limit`），還沒在 Discord 實際進房。

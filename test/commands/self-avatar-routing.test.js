@@ -104,6 +104,19 @@ describe('切段發言途中專屬 webhook 失效', () => {
     assert.equal(env.readState('claude-1').discussRound, 0);
   });
 
+  test('同上加 --json：錯誤輸出帶 agentWebhookLost: true', async () => {
+    env = await setup();
+    const own = await withAvatar(env);
+    removeHook(env, own);
+    env.mock.fail({ method: 'POST', path: ownPath(sharedHook(env)), status: 400, body: { message: 'Bad', code: 50035 } });
+    const r = await env.run(['post', '--as', 'claude-1', '--json', 'hi']);
+    assert.equal(r.code, 1);
+    const out = r.json();
+    assert.equal(out.ok, false);
+    assert.equal(out.agentWebhookLost, true);
+    assert.match(out.error.message, LOST);
+  });
+
   test('token 失效（401）也一樣改用共用 webhook', async () => {
     env = await setup();
     const own = await withAvatar(env);

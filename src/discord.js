@@ -142,8 +142,9 @@ export function createClient(token, { apiBase, retryBaseMs = 1000, timeoutMs = R
     }
   }
 
-  const webhookRoute = (webhook) => `/webhooks/${webhook.id}/${webhook.token}`;
-  const webhookLabel = (webhook) => `/webhooks/${webhook.id}/***`;
+  // id 與 token 來自本機快取或 Discord 的回應；一律編碼，快取被改過時也不會讓請求打到別的路徑。
+  const webhookRoute = (webhook) => `/webhooks/${encodeURIComponent(webhook.id)}/${encodeURIComponent(webhook.token)}`;
+  const webhookLabel = (webhook) => `/webhooks/${encodeURIComponent(webhook.id)}/***`;
 
   async function messages(channelId, { after, before, limit = 100 } = {}) {
     const q = new URLSearchParams({ limit: String(limit) });
@@ -208,7 +209,7 @@ export function createClient(token, { apiBase, retryBaseMs = 1000, timeoutMs = R
     },
 
     // 刪除 webhook（clear 用），bot 身分，需要「管理 Webhook」權限。
-    deleteWebhook: (id) => request('DELETE', `/webhooks/${id}`),
+    deleteWebhook: (id) => request('DELETE', `/webhooks/${encodeURIComponent(id)}`),
 
     // 帶 token 的 webhook 端點不需要 bot 身分，也不送 bot token。
     getWebhook: (id, webhookToken) =>

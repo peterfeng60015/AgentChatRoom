@@ -4,7 +4,7 @@ import path from 'node:path';
 import { compareSnowflake } from '../discord.js';
 import { DiscordError, ProtocolError, UserError } from '../errors.js';
 import { LEFT_TEXT } from '../protocol.js';
-import { agentWebhookName, requireAgent } from '../context.js';
+import { agentWebhookName, rememberRoomWebhook, requireAgent } from '../context.js';
 import { checkSecretPath, guardSecrets } from '../publish.js';
 import { clearAgentWebhook, loadAgentWebhook, saveAgentWebhook } from '../state.js';
 
@@ -97,6 +97,8 @@ async function applyAvatar(client, room, name, avatar) {
       return { webhook: save({ ...cached, name: info?.name ?? cached.name }), source: 'updated' };
     } catch (e) {
       if (!(e instanceof DiscordError) || ![401, 404].includes(e.status)) throw e;
+      // 先記進辨識快取的 room：快取刪掉後，這個 webhook 以前發的訊息才不會被當成陌生 webhook（§4.5）。
+      rememberRoomWebhook(room.channelId, cached.id);
       clearAgentWebhook(room.channelId, name);
     }
   }
@@ -111,6 +113,7 @@ async function applyAvatar(client, room, name, avatar) {
     } catch (e) {
       // 查清單之後才被刪掉（或 token 已失效）：和快取失效一樣，改建新的。
       if (!(e instanceof DiscordError) || ![401, 404].includes(e.status)) throw e;
+      rememberRoomWebhook(room.channelId, found.id);
     }
   }
   const created = await client.createWebhook(room.channelId, webhookName, avatar);

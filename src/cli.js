@@ -77,7 +77,9 @@ export async function main(argv, io = {}) {
     const code = exitCodeOf(e);
     const known = e instanceof UserError || e instanceof ProtocolError || e instanceof DiscordError;
     const message = known ? e.message : `內部錯誤：${e?.message ?? e}`;
-    if (json) write(stdout, JSON.stringify({ ok: false, error: { code, message } }));
+    // §6.2：發言途中專屬 webhook 失效、之後又失敗時，--json 也要帶 agentWebhookLost。
+    const extra = e?.agentWebhookLost ? { agentWebhookLost: true } : {};
+    if (json) write(stdout, JSON.stringify({ ok: false, error: { code, message }, ...extra }));
     else write(stderr, `agentchat: ${message}`);
     if (!known && process.env.AGENTCHAT_DEBUG) write(stderr, e?.stack ?? String(e));
     return code;
