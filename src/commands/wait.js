@@ -124,7 +124,8 @@ async function waitLocked(ctx, room, initial, timeout, until) {
         ids = await sendParts(ctx, updated, [content]);
       } catch (e) {
         // §5.4：送不出去不丟錯，這批訊息照常輸出、狀態維持逾時、階段不改，下次 wait 會再試。
-        notes.push(`自動 [IDLE] 送出失敗（${e.message}），下次 wait 會再試；可用 ${cmdText(updated.name, 'read', '--last 5', room)} 確認是否已送出`);
+        const why = String(e.message).split('，訊息可能已經送出')[0];
+        notes.push(`自動 [IDLE] 送出失敗（${why}），下次 wait 會再試；可用 ${cmdText(updated.name, 'read', '--last 5', room)} 確認是否已送出`);
       }
       if (ids) {
         updated = updateAgent(room.channelId, state.name, (s) => {
