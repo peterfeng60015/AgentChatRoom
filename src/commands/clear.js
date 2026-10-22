@@ -164,31 +164,48 @@ function clearAgentStates(channelId) {
 
 // §6.3 clear 第 6 步：刪掉頻道裡本工具建立的專屬 webhook（名稱以 `<webhookName>-` 開頭），共用 webhook 保留；
 // 再刪本機的專屬 webhook 快取與辨識快取。Discord 那邊失敗只回傳警告，本機快取照樣刪。
+// 錯誤訊息只用 DiscordError 的訊息（路徑是 /webhooks/<id>，不含 token），清單裡的 token 不碰。
 async function clearAgentWebhookHooks(client, room) {
   let deleted = 0;
-  let error = null;
+  const errors = [];
+  const reason = (e, what) =>
+    e instanceof DiscordError && e.status === 403
+      ? `${what}：bot 沒有「管理 Webhook」權限`
+      : `${what}：${e instanceof DiscordError ? e.message : e.code || e.message}`;
+  let list = [];
   try {
-    const list = await client.listWebhooks(room.channelId);
-    const prefix = `${room.webhookName}-`;
-    for (const w of Array.isArray(list) ? list : []) {
-      if (typeof w?.name !== 'string' || !w.name.startsWith(prefix)) continue;
-      try {
-        await client.deleteWebhook(w.id);
-        deleted++;
-      } catch (e) {
-        if (!(e instanceof DiscordError) || e.status !== 404) throw e;
-      }
+    const res = await client.listWebhooks(room.channelId);
+    list = Array.isArray(res) ? res : [];
+  } catch (e) {
+    errors.push(reason(e, '查頻道的 webhook 清單失敗'));
+  }
+  const prefix = `${room.webhookName}-`;
+  let failed = 0;
+  let firstError = null;
+  for (const w of list) {
+    // 只有 `<webhookName>-` 開頭的才是專屬 webhook；共用（名稱等於 webhookName）與名稱只是相近的別人的都保留。
+    if (!w?.id || typeof w.name !== 'string' || !w.name.startsWith(prefix)) continue;
+    try {
+      await client.deleteWebhook(w.id);
+      deleted++;
+    } catch (e) {
+      if (e instanceof DiscordError && e.status === 404) continue; // 已不存在
+      failed++; // 一個刪不掉不影響其他的
+      firstError ??= e;
     }
-  } catch (e) {
-    error = e.message;
   }
-  try {
-    clearAgentWebhooks(room.channelId);
-    clearKnownWebhooks(room.channelId);
-  } catch (e) {
-    error = [error, `本機專屬 webhook 快取刪除失敗：${e.code || e.message}`].filter(Boolean).join('；');
+  if (failed) errors.push(reason(firstError, `有 ${failed} 個專屬 webhook 刪除失敗`));
+  for (const [what, fn] of [
+    ['本機專屬 webhook 快取', clearAgentWebhooks],
+    ['webhook 辨識快取', clearKnownWebhooks],
+  ]) {
+    try {
+      fn(room.channelId);
+    } catch (e) {
+      errors.push(`${what}刪除失敗：${e.code || e.message}`);
+    }
   }
-  return { deleted, error };
+  return { deleted, error: errors.length ? errors.join('；') : null };
 }
 
 export async function run(ctx) {
@@ -296,10 +313,12 @@ export async function run(ctx) {
       ? `已清除本機 ${cleared.agents.length} 個 agent 的狀態檔與 wait 鎖（${cleared.agents.map(oneLine).join('、')}）：${cleared.dir}；共用 webhook 快取保留`
       : `本機沒有這個房間的 agent 狀態（${cleared.dir}）；共用 webhook 快取保留`,
   );
-  text.push(`已刪除頻道裡 ${hooks.deleted} 個 agent 專屬 webhook（共用 webhook 保留）`);
   if (hooks.error) {
-    text.push(`警告：刪除專屬 webhook 沒有完成（${hooks.error}）；可到頻道設定 → 整合 → Webhook 手動刪掉名稱以 ${room.webhookName}- 開頭的`);
-  }
+    text.push(
+      `警告：刪除專屬 webhook 沒有完成（${hooks.error}），已刪除 ${hooks.deleted} 個；` +
+        `可到頻道設定 → 整合 → Webhook 手動刪掉名稱以 ${room.webhookName}- 開頭的；失效的專屬 webhook 在 agent 發言時會自動改用共用 webhook`,
+    );
+  } else text.push(`已刪除頻道裡 ${hooks.deleted} 個 agent 專屬 webhook（共用 webhook 保留）`);
   if (cleared.markError) {
     text.push(`警告：清除標記寫入失敗（${cleared.markError}），還在跑的 agent 下一個指令會被提示 join 而不是停下來`);
   }

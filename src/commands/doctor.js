@@ -3,19 +3,19 @@ import { ENV_FILE, findToken, loadRoom } from '../config.js';
 import { DEFAULT_API_BASE, createClient } from '../discord.js';
 import { DiscordError } from '../errors.js';
 import { validateAgentName } from '../protocol.js';
-
-// doctor 不需要 --as；非預設房間帶 --room。
-const readText = (room) => `agentchat read${room?.roomArg ? ` --room ${room.roomArg}` : ''} --last 5`;
 import { loadAgent } from '../state.js';
 import { WEBHOOK_SOURCE_TEXT, ensureWebhook, isRoomWebhookName, summaryLine } from '../context.js';
 import { botChannelAccess, permissionFix } from './clear.js';
+
+// doctor 不需要 --as；非預設房間帶 --room。
+const readText = (room) => `agentchat read${room?.roomArg ? ` --room ${room.roomArg}` : ''} --last 5`;
 
 export const summary = '逐項檢查 Node、設定、bot token、Discord 權限與 webhook';
 export const usage = 'agentchat doctor [--as <名稱>] [--send-test]';
 export const options = { 'send-test': { type: 'boolean', default: false } };
 export const details = [
   '每項一行 [OK]、[WARN] 或 [FAIL]，最後一行總結。有 FAIL 時結束碼 1，設定問題結束碼 2。',
-  '--send-test：用 webhook 發一則 [INFO] doctor 測試（只有帶這個選項才發）。',
+  '--send-test：用共用 webhook 發一則 [INFO] doctor 測試（只有帶這個選項才發）。',
   '--as：額外印出該 agent 的本機狀態摘要。',
 ];
 
@@ -182,6 +182,7 @@ export async function run(ctx) {
         try {
           const list = await client.listWebhooks(room.channelId);
           const all = Array.isArray(list) ? list : [];
+          // 只有名稱等於 webhookName 的是共用，`<webhookName>-` 開頭的才是專屬；名稱只是相近的不算本工具的。
           const shared = all.filter((w) => w?.name === room.webhookName).length;
           const own = all.filter((w) => isRoomWebhookName(w?.name, room)).length - shared;
           const detail = `頻道有 ${all.length}/${WEBHOOK_LIMIT} 個 webhook（本工具的共用 ${shared} 個、agent 專屬 ${own} 個）`;
@@ -197,7 +198,7 @@ export async function run(ctx) {
         }
       }
 
-      // 9. 發測試訊息
+      // 9. 發測試訊息（用第 8 項取得的共用 webhook，不用 agent 的專屬 webhook）
       if (ctx.values['send-test']) {
         if (!webhook) add('WARN', '測試訊息', '沒有可用的 webhook，略過');
         else {
