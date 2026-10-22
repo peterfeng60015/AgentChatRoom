@@ -6,7 +6,7 @@ export const summary = '發 [QUESTION] 向主導者提問，會真的 @ 主導�
 export const usage = 'agentchat ask --as <名稱> [--file <路徑>]... <問題|->';
 export const options = { ...BODY_OPTIONS, file: { type: 'string', multiple: true } };
 export const details = [
-  BODY_SOURCE_HELP,'送出後記下待答問題；接著用 wait --until mention 等主導者回答（[ANSWER] 或回覆這則訊息）。'];
+  BODY_SOURCE_HELP,'送出後記下待答問題；接著照目前階段的等法 wait（輸出裡會印出完整指令），主導者的回答（[ANSWER] 或回覆這則訊息）一定收得到。'];
 
 export async function run(ctx) {
   const room = ctx.room;

@@ -28,7 +28,8 @@ function isNetworkError(e) {
 function hintFor(status, label) {
   if (status === 413) return 'Discord 拒收：附檔太大（超過伺服器的上傳上限），請縮小或分開傳';
   if (status === 401 && label.startsWith('/webhooks/')) {
-    return 'webhook 已失效（token 不對或已被刪除），請執行 agentchat doctor 重新取得';
+    // 完整的 doctor 指令（含 --room）由指令層補上。
+    return 'webhook 已失效（token 不對或已被刪除）';
   }
   if (status === 401) return 'bot token 無效或已重設，請檢查 .env 的 DISCORD_BOT_TOKEN';
   if (status === 403) return `bot 沒有權限存取 ${label}（請確認 bot 已邀進伺服器，且有對應頻道權限）`;
@@ -132,7 +133,11 @@ export function createClient(token, { apiBase, retryBaseMs = 1000, timeoutMs = R
           data = text;
         }
       }
-      if (!res.ok) throw new DiscordError(res.status, data, hintFor(res.status, label));
+      if (!res.ok) {
+        const err = new DiscordError(res.status, data, hintFor(res.status, label));
+        if (res.status === 401 && label.startsWith('/webhooks/')) err.needsDoctor = true;
+        throw err;
+      }
       return data;
     }
   }

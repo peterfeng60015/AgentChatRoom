@@ -188,7 +188,7 @@ export function saveAgent(state) {
 export function updateAgent(channelId, name, mutate) {
   return withLock(agentFile(channelId, name), () => {
     const state = loadAgent(channelId, name);
-    if (!state) throw new UserError(`找不到 ${name} 的狀態檔，請先 agentchat join --as ${name} --vendor <claude|gemini|codex|other>`);
+    if (!state) throw new UserError(`找不到 ${name} 的狀態檔，請先重新 join`);
     const result = mutate(state);
     saveAgent(state);
     return result === undefined ? state : result;
