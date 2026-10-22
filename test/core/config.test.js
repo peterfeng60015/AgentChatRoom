@@ -60,6 +60,8 @@ const DEFAULTS = {
   maxFileMB: 10,
   maxUploadMB: 10,
   longTextChars: 6000,
+  avatarUrlTemplate: 'https://api.dicebear.com/10.x/{style}/png?seed={name}&size=128',
+  avatarStyles: { claude: 'bottts', gemini: 'pixel-art', codex: 'adventurer', other: 'identicon' },
 };
 
 function writeRoom(obj, file = path.join(HOME, 'config', 'room.json')) {
@@ -155,6 +157,16 @@ test('roomFile：沒給名稱是 config/room.json，--room 名稱是 config/room
 test('loadRoom：只有必填欄位時合併 §3.1 全部預設值，另加 file 與 roomArg', () => {
   const file = writeRoom(REQUIRED);
   assert.deepEqual(loadRoom(), { ...DEFAULTS, ...REQUIRED, file, roomArg: null });
+});
+
+test('loadRoom：avatarStyles 逐個 vendor 覆蓋預設，回傳的是複本；avatarUrlTemplate 是空字串時為 null', () => {
+  writeRoom({ ...REQUIRED, avatarUrlTemplate: '', avatarStyles: { codex: 'thumbs' } });
+  const room = loadRoom();
+  assert.equal(room.avatarUrlTemplate, null);
+  assert.deepEqual(room.avatarStyles, { ...DEFAULTS.avatarStyles, codex: 'thumbs' });
+  writeRoom(REQUIRED);
+  loadRoom().avatarStyles.claude = 'changed';
+  assert.equal(loadRoom().avatarStyles.claude, 'bottts', '改一份不影響下一次 loadRoom');
 });
 
 test('loadRoom：設定檔的值覆寫預設值', () => {

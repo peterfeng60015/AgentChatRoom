@@ -61,6 +61,8 @@
 | `maxFileMB` | | `10` | 單一附檔上限 |
 | `maxUploadMB` | | `10` | 一則訊息所有附檔的總和上限（Discord 沒加成的伺服器上限是 10 MB，有加成可調高） |
 | `longTextChars` | | `6000` | 文字超過這個長度就改成附檔 |
+| `avatarUrlTemplate` | | `https://api.dicebear.com/10.x/{style}/png?seed={name}&size=128` | agent 發言的頭像網址（§6.2）。`{name}` 換成 agent 名稱、`{vendor}` 換成狀態檔的 `vendor`（沒有時是 `other`）、`{style}` 換成 `avatarStyles` 對應的風格，三者都先 URL 編碼；其他文字照原樣。必須以 `http://` 或 `https://` 開頭（不分大小寫，後面要接網址內容；Discord 只吃 PNG／JPG 等點陣圖，不吃 SVG）。**寫 `null` 或空字串表示不帶頭像**（其他選填欄位寫 `null` 或空字串時用預設值，這個欄位例外），Discord 顯示 webhook 本身的頭像 |
+| `avatarStyles` | | `{"claude":"bottts","gemini":"pixel-art","codex":"adventurer","other":"identicon"}` | vendor 對應的 DiceBear 風格；必須是 JSON 物件，設定檔有寫的 vendor 覆蓋預設，沒寫的沿用預設；整個欄位寫 `null` 時用預設。每個值必須是非空字串（寫 `null` 也是錯誤，要還原預設就刪掉那個 vendor）。vendor 不在表裡（或狀態檔沒有 vendor）時用 `other` 的風格 |
 
 `--room <名稱>` 時改讀 `config/rooms/<名稱>.json`，欄位相同。
 
@@ -302,6 +304,7 @@ agent 用：
   - 全文超過 2000 字：用 `splitMessage()` 切成多則依序送出，只有第一則帶標籤列，附檔放在最後一則。
 - 附檔：`--file <路徑>` 可重複，最多 10 個；每個不超過 `maxFileMB`，總和不超過 `maxUploadMB`；超過就拒絕（結束碼 2）。Discord 回 413（檔案太大）時也是結束碼 2，訊息說明是 Discord 拒收。依副檔名給 content type，圖片（png、jpg、jpeg、gif、webp）Discord 會直接顯示。
 - 顯示名稱：`displayName(名稱, 角色)`。
+- 頭像：每一則 agent 發言（包含 `join` 的 `[JOIN]`、`wait` 自動發的 `[IDLE]`、切段後的每一則）都依 §3.1 的 `avatarUrlTemplate` 帶 `avatar_url`，名稱用 agent 名稱（不含角色），所以同名同圖、換角色不換圖；`avatarUrlTemplate` 是 `null` 時不帶。`doctor --send-test` 不是 agent 發言，不帶。工具本身不連頭像網址（`doctor` 也不檢查），是 Discord 依網址去抓圖。
 
 ### 6.3 各指令
 
@@ -424,7 +427,7 @@ agent 用：
 ### 7.4 `src/discord.js`
 
 `createClient(token, { apiBase, retryBaseMs })`（修改：`apiBase` 預設讀 `AGENTCHAT_API_BASE`；`retryBaseMs` 是 5xx 與網路錯誤的退避基準，預設 1000，第 n 次重試等 `retryBaseMs × n`，測試可設小值）回傳的物件提供：
-`me()`、`application()`（新增，`GET /applications/@me`）、`channel(id)`、`messages(id, { after, before, limit })`（舊到新）、`messagesAfter(id, cursor, maxPages)`、`message(channelId, messageId)`、`listWebhooks(id)`、`createWebhook(id, name)`、`getWebhook(id, token)`（新增）、`executeWebhook(webhook, { content, username, files, allowedMentions })`、`download(url)`。
+`me()`、`application()`（新增，`GET /applications/@me`）、`channel(id)`、`messages(id, { after, before, limit })`（舊到新）、`messagesAfter(id, cursor, maxPages)`、`message(channelId, messageId)`、`listWebhooks(id)`、`createWebhook(id, name)`、`getWebhook(id, token)`（新增）、`executeWebhook(webhook, { content, username, avatarUrl, files, allowedMentions })`（`avatarUrl` 有值時送 `avatar_url`）、`download(url)`。
 另外 export `compareSnowflake`、`snowflakeNow`、`snowflakeToDate`。
 遇到 429 依 `retry_after` 等待重試（`retry_after` 超過 60 秒就不等，直接丟 `DiscordError`，訊息寫明要等幾秒），5xx 與網路錯誤退避重試；重試最多 5 次（加上第一次共 6 次請求）；401、403、404 給中文提示。
 例外：`executeWebhook`（發言）只在 429 時重試；5xx 與網路錯誤不重試，直接結束碼 1，訊息提示「可能已經送出，先用 agentchat read --as <名稱> --last 5 確認再決定要不要重發」（有 `roomArg` 時另帶 `--room`；這句由指令層組出，`discord.js` 不知道名稱與房間），以免重複發言。

@@ -33,6 +33,9 @@ export const ROOM_DEFAULTS = {
   maxFileMB: 10,
   maxUploadMB: 10,
   longTextChars: 6000,
+  // webhook 發言的頭像網址（§3.1）。{name}、{vendor}、{style} 會換成 URL 編碼後的值；設 null 不帶頭像。
+  avatarUrlTemplate: 'https://api.dicebear.com/10.x/{style}/png?seed={name}&size=128',
+  avatarStyles: { claude: 'bottts', gemini: 'pixel-art', codex: 'adventurer', other: 'identicon' },
 };
 
 const REQUIRED = ['guildId', 'channelId', 'moderatorUserId'];
@@ -133,6 +136,13 @@ export function loadRoom(roomName) {
   // 選填欄位寫成 null 或空字串時用預設值，不要讓「基準分支：null」或空名稱的 webhook 跑出來。
   const given = Object.fromEntries(Object.entries(json).filter(([, v]) => v !== null && v !== ''));
   const room = { ...ROOM_DEFAULTS, ...given, file, roomArg: roomName || null };
+  // avatarUrlTemplate 例外：null 或空字串是「不帶頭像」，不是用預設值。avatarStyles 逐個 vendor 覆蓋預設。
+  if (json.avatarUrlTemplate === null || json.avatarUrlTemplate === '') room.avatarUrlTemplate = null;
+  // 一律複製一份，不讓 room 指向共用的 ROOM_DEFAULTS.avatarStyles。
+  if (given.avatarStyles !== undefined && (typeof given.avatarStyles !== 'object' || Array.isArray(given.avatarStyles))) {
+    throw new UserError(`房間設定檔的 avatarStyles 必須是 JSON 物件：${file}`);
+  }
+  room.avatarStyles = { ...ROOM_DEFAULTS.avatarStyles, ...given.avatarStyles };
   for (const [key, [min, integer]] of Object.entries(NUMERIC)) {
     const v = room[key];
     if (typeof v !== 'number' || !Number.isFinite(v) || v < min || (integer && !Number.isInteger(v))) {
@@ -147,6 +157,12 @@ export function loadRoom(roomName) {
   }
   if (room.defaultRepo !== null && typeof room.defaultRepo !== 'string') {
     throw new UserError(`房間設定檔的 defaultRepo 必須是字串或 null：${file}`);
+  }
+  if (room.avatarUrlTemplate !== null && (typeof room.avatarUrlTemplate !== 'string' || !/^https?:\/\/\S/i.test(room.avatarUrlTemplate))) {
+    throw new UserError(`房間設定檔的 avatarUrlTemplate 必須是 http(s) 網址或 null：${file}`);
+  }
+  for (const [vendor, style] of Object.entries(room.avatarStyles)) {
+    if (typeof style !== 'string' || !style) throw new UserError(`房間設定檔的 avatarStyles.${vendor} 必須是非空字串：${file}`);
   }
   return room;
 }
