@@ -6,3 +6,6 @@ node_modules/
 
 # 系統
 .DS_Store
+
+# Claude Code 的 worktree
+.claude/worktrees/
