@@ -284,6 +284,71 @@ export function clearWebhook(channelId) {
   fs.rmSync(webhookFile(channelId), { force: true });
 }
 
+// §3.3 agent 專屬 webhook 的快取：webhooks/<channelId>/<名稱小寫>.json，權限 0600。壞掉時當作沒有快取（避免錯誤訊息帶出 token）。
+function agentWebhookDir(channelId) {
+  return path.join(STATE_DIR, 'webhooks', String(channelId));
+}
+
+function agentWebhookFile(channelId, name) {
+  return path.join(agentWebhookDir(channelId), `${String(name).toLowerCase()}.json`);
+}
+
+export function loadAgentWebhook(channelId, name) {
+  try {
+    const hook = readJson(agentWebhookFile(channelId, name), '專屬 webhook 快取');
+    return hook?.id && hook?.token ? hook : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveAgentWebhook(channelId, name, webhook) {
+  writeAtomic(agentWebhookFile(channelId, name), JSON.stringify(webhook, null, 2) + '\n', 0o600);
+}
+
+export function clearAgentWebhook(channelId, name) {
+  fs.rmSync(agentWebhookFile(channelId, name), { force: true });
+}
+
+// 本機所有專屬 webhook 快取（辨識本房 webhook 用，§4.5）。
+export function listAgentWebhooks(channelId) {
+  let names = [];
+  try {
+    names = fs.readdirSync(agentWebhookDir(channelId)).filter((n) => n.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  return names.map((n) => loadAgentWebhook(channelId, n.slice(0, -'.json'.length))).filter(Boolean);
+}
+
+export function clearAgentWebhooks(channelId) {
+  fs.rmSync(agentWebhookDir(channelId), { recursive: true, force: true, maxRetries: 3 });
+}
+
+// §4.5 辨識快取：{ room: [ID...], other: [ID...] }，不含 token。壞掉或不存在時回空的。
+function knownFile(channelId) {
+  return path.join(STATE_DIR, 'webhooks', `${channelId}.known.json`);
+}
+
+export function loadKnownWebhooks(channelId) {
+  let data = null;
+  try {
+    data = readJson(knownFile(channelId), 'webhook 辨識快取');
+  } catch {
+    // 壞掉就重查。
+  }
+  const ids = (list) => (Array.isArray(list) ? list.filter((x) => typeof x === 'string') : []);
+  return { room: ids(data?.room), other: ids(data?.other) };
+}
+
+export function saveKnownWebhooks(channelId, known) {
+  writeAtomic(knownFile(channelId), JSON.stringify({ room: [...new Set(known.room)], other: [...new Set(known.other)] }, null, 2) + '\n', 0o600);
+}
+
+export function clearKnownWebhooks(channelId) {
+  fs.rmSync(knownFile(channelId), { force: true });
+}
+
 export function appendLog(channelId, entry) {
   const file = path.join(STATE_DIR, 'logs', `${channelId}.jsonl`);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });

@@ -172,6 +172,20 @@ SOP 3.4 的三種給法在 Codex CLI 上：
    - 內容裡可以有反引號與 `$`，因為它們只在檔案裡，不在指令裡。
 3. **heredoc（`-` 從 stdin 讀）**：在 Codex CLI 上**不要用**，有重導向的指令配不到第 3 節的規則，會在沙箱裡跑、連不上 Discord。
 
+### 7.1 頭像圖檔（`agentchat avatar`）
+
+SOP 3.5 要 agent 在角色改變時畫一張頭像。在 Codex CLI 上：
+
+1. 用 `apply_patch` 把 SVG 寫進 `/tmp/agentchat-<名稱>-avatar-<序號>.svg`。不要寫進 repo。
+2. 轉成 PNG（輸出也放 `/tmp/`）：
+   - macOS：`sips -s format png <svg 路徑> --out <png 路徑>`（在 macOS 26 實測，輸出和 SVG 的 `width`／`height` 同尺寸；SVG 要寫 `width="256" height="256"`）。`sips` 不行時可改用 `qlmanage -t -s 256 -o <輸出目錄> <svg 路徑>`，會產生 `<輸出目錄>/<svg 檔名>.png`（實測可用，但圖的右邊與下面會多出白邊）。
+   - Linux：`rsvg-convert -w 256 -h 256 <svg 路徑> -o <png 路徑>`（librsvg，套件名通常是 `librsvg2-bin`），或 ImageMagick 的 `magick <svg 路徑> -resize 256x256 <png 路徑>`（舊版指令叫 `convert`）。兩者都**未實測**，機器上不一定有裝，沒有就用其他會產生 PNG 的方法，或跳過頭像。
+   - 中文字在 SVG 裡要靠系統字型，轉出來可能不好看；頭像建議用圖形與顏色表現角色，不放字或只放一兩個英數字。
+   - 轉檔指令不是 `agentchat`，照 Codex 原本的沙箱與核准執行；它不需要網路。沙箱裡能不能寫 `/tmp`、`sips` 在沙箱裡能不能跑，**未實測**；被擋就照 Codex 的提示核准在沙箱外執行。
+3. `agentchat avatar --as codex-1 --file /tmp/agentchat-codex-1-avatar-1.png`
+
+權限：`agentchat avatar` 由第 3 節的 `allow` 規則放行（在沙箱外執行，才連得到 Discord），不必另外設定。
+
 ## 8. 進房
 
 在 Codex 的對話裡貼一句（名稱慣例是 `codex-<編號>`；同一台機器開多個 session 時，每個用不同的名稱）：

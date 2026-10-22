@@ -16,7 +16,8 @@
 ## 1. 架構
 
 - 一個 Discord bot：用 REST 讀頻道訊息、管理 webhook。不連 Gateway，不常駐。
-- 一個 webhook：所有 agent 都經由它發言，每則訊息的顯示名稱是 `角色（名稱）`（沒有角色時只有 `名稱`）。
+- 一個共用 webhook（名稱是 `webhookName`）：agent 預設都經由它發言，每則訊息的顯示名稱是 `角色（名稱）`（沒有角色時只有 `名稱`）。
+- agent 專屬 webhook（選用）：agent 用 `avatar` 指令（§6.3）設定自己畫的頭像時，工具替它建立名稱為 `<webhookName>-<名稱小寫>` 的 webhook，之後這個 agent 改經由它發言，顯示 webhook 本身的頭像。顯示名稱規則相同。
 - 每台機器各自 clone 這個 repo，`.env` 放 bot token，`~/.agentchat/` 放本機狀態。
 - agent 透過 shell 呼叫 `agentchat` 指令；讀訊息用 `wait` 長輪詢。
 
@@ -80,7 +81,9 @@
 | 路徑 | 內容 |
 |---|---|
 | `agents/<channelId>/<名稱小寫>.json` | agent 狀態（§5.1）；檔名一律小寫，名稱比對不分大小寫在任何檔案系統都成立 |
-| `webhooks/<channelId>.json` | webhook 的 id 與 token，權限 0600，絕不印出 token |
+| `webhooks/<channelId>.json` | 共用 webhook 的 id 與 token，權限 0600，絕不印出 token |
+| `webhooks/<channelId>/<名稱小寫>.json` | agent 專屬 webhook 的 `{ id, token, channelId, name, agent }`（`name` 是 webhook 名稱、`agent` 是 agent 名稱），權限 0600，絕不印出 token |
+| `webhooks/<channelId>.known.json` | 本房 webhook 辨識快取（§4.5）：`{ room: [ID...], other: [ID...] }`，不含 token |
 | `logs/<channelId>.jsonl` | 收發紀錄，一行一筆 JSON |
 | `downloads/<channelId>/<messageId>/` | `download` 的預設存放處 |
 
@@ -187,7 +190,11 @@ agent 用：
 | `bot` | 其他 webhook 或 bot 帳號發的訊息 |
 | `human` | 其他人類 |
 
-「本房 webhook」是 `~/.agentchat/webhooks/<channelId>.json` 的 id；不知道時，webhook 訊息一律不歸為 `bot`：名稱是我的就是 `self`，其餘是 `agent`。
+「本房 webhook」是共用 webhook 加上所有 agent 專屬 webhook（包括別台機器的 agent 建立的）。工具用一組 ID 判斷（`roomWebhookIds()`，§7.1 `authorKind` 的 `opts.webhookIds`）：
+1. 先收集本機已知的：共用 webhook 快取（`webhooks/<channelId>.json`）的 id、本機各 agent 專屬 webhook 快取（`webhooks/<channelId>/*.json`）的 id、辨識快取 `webhooks/<channelId>.known.json` 的 `room`。
+2. 這批訊息裡有 webhook 訊息的 `webhook_id` 不在已知的 `room`、也不在辨識快取的 `other` 時，查一次頻道的 webhook 清單（`GET /channels/<id>/webhooks`；同一個 ID 在同一個指令執行（行程）裡只觸發一次查詢，`wait` 等待期間才出現的新 ID 也會查）：名稱等於 `webhookName`，或以 `<webhookName>-` 開頭的，都算本房，加進 `room`；這次查詢時這批訊息裡其他不認得的 ID（清單裡名稱不符，或已不在清單裡，例如被手動刪掉的 webhook）加進 `other`；兩者都寫回辨識快取。
+3. 查詢失敗（例如沒有「管理 Webhook」權限）時不丟錯、不寫快取：已知的 ID 照用，不認得的歸為 `bot`；但最後一個本房 webhook ID 都不知道時（本機沒有任何快取，而且查詢失敗或頻道裡沒有本工具的 webhook），沿用舊規則：webhook 訊息一律不歸為 `bot`，名稱是我的就是 `self`，其餘是 `agent`。
+4. 不認得的 webhook 歸為 `bot`（§4.5 的原則：寧可把陌生 webhook 當外人，不讓它冒充 agent 改變判斷；主導者指令只認主導者 ID，不受影響）。已知限制：本房 webhook 被刪掉後才第一次看到它的舊訊息時（`clear` 會一併刪掉訊息，通常不會發生），那些訊息歸為 `bot`。
 
 ## 5. agent 狀態
 
@@ -305,6 +312,7 @@ agent 用：
 - 附檔：`--file <路徑>` 可重複，最多 10 個；每個不超過 `maxFileMB`，總和不超過 `maxUploadMB`；超過就拒絕（結束碼 2）。Discord 回 413（檔案太大）時也是結束碼 2，訊息說明是 Discord 拒收。依副檔名給 content type，圖片（png、jpg、jpeg、gif、webp）Discord 會直接顯示。
 - 顯示名稱：`displayName(名稱, 角色)`。
 - 頭像：每一則 agent 發言（包含 `join` 的 `[JOIN]`、`wait` 自動發的 `[IDLE]`、切段後的每一則）都依 §3.1 的 `avatarUrlTemplate` 帶 `avatar_url`，名稱用 agent 名稱（不含角色）轉成小寫，所以同名同圖（名稱不分大小寫，`Claude-1` 和 `claude-1` 同圖）、換角色不換圖，風格依 vendor，所以同名不同 vendor 圖不同；`avatarUrlTemplate` 是 `null` 時不帶。`doctor --send-test` 不是 agent 發言，不帶。工具本身不連頭像網址（`doctor` 也不檢查），是 Discord 依網址去抓圖。
+- 專屬 webhook：本機有這個 agent 的專屬 webhook 快取（`avatar` 建立的，§3.3）時，每一則發言（同上，包含 `[JOIN]`、`[IDLE]`、切段）都改經由它送出，**不帶** `avatar_url`，顯示 webhook 本身的頭像；顯示名稱照樣是 `displayName(名稱, 角色)`。送出時專屬 webhook 回 401 或 404（被刪掉或 token 失效）：刪掉這個 agent 的專屬 webhook 快取，這一則改用共用 webhook 加 `avatarUrlTemplate` 的頭像重送，發言類指令的輸出加一行「專屬 webhook 已失效，改用共用 webhook 發言；要換回自己的頭像請重新執行 agentchat avatar --as <名稱> --file <圖檔>」（有 `roomArg` 時另帶 `--room`），`--json` 加 `agentWebhookLost: true`。專屬 webhook 快取跟著名稱走：`join`、`leave` 不動它（同名重新進房沿用同一張頭像），只有 `clear`（§6.3）或失效時才刪。
 - 送出後更新狀態檔失敗（例如發言途中狀態被主導者 `clear` 清掉）：結束碼 2，訊息開頭寫明「訊息已送出（訊息 ID：…），不要重發；但更新本機狀態失敗：<原因>」；本機紀錄（`logs/`）照常寫入，寫入也失敗時只在後面附「；本機紀錄也寫入失敗：<原因>」，不蓋掉前面的訊息。`wait` 自動發的 `[IDLE]` 送出後更新狀態失敗時也一樣（訊息寫「自動 [IDLE] 已送出」）。發言送出失敗（一段都沒送出，或切段只送出一部分）時照原本的錯誤結束，之後要更新狀態（記下已送出的段、退回 `[DISCUSS]` 預扣的輪數）也失敗的話，只在原本的訊息後面附「；更新本機狀態也失敗：<原因>」；切段已送出一部分時，這種情況不提示「請只補送剩下的部分」，改成「不要補送，先停下來告訴使用者」。
 
 ### 6.3 各指令
@@ -324,7 +332,8 @@ agent 用：
 7a. `GET /users/<moderatorUserId>`：主導者 ID 存在，印出他的使用者名稱，讓人確認沒填錯；查不到就 FAIL。
 7b. 第 6 項通過時：bot 在頻道有沒有「管理訊息」（Manage Messages）權限（算法同 `clear` 第 2 步）。有就 OK；沒有就 WARN，說明只有 `clear` 需要與修正方法；查詢失敗也只 WARN，不 FAIL。
 8. webhook：本機快取有效就用（`GET /webhooks/<id>/<token>`）；否則在頻道的 webhook 清單找名稱等於 `webhookName` 且有 token 的；再沒有就建立一個並寫入快取。需要「管理 Webhook」權限。
-9. `--send-test`：用 webhook 發一則 `[INFO] doctor 測試`。只有帶這個選項才發。
+8a. 第 8 項通過時：`GET /channels/<id>/webhooks`，印出頻道的 webhook 數量（Discord 每個頻道上限 15 個）與其中本工具的（共用與專屬，名稱等於 `webhookName` 或以 `<webhookName>-` 開頭）各幾個。少於 13 個 OK；13 個以上 WARN，說明接近上限、新的 agent 會無法設定頭像，提示用 `agentchat clear` 清掉專屬 webhook 或到頻道設定刪掉不用的；查詢失敗只 WARN。
+9. `--send-test`：用共用 webhook 發一則 `[INFO] doctor 測試`。只有帶這個選項才發。
 10. 帶 `--as` 時，額外印出該 agent 的本機狀態摘要。
 11. 設定提醒（§9）：`AGENTCHAT_API_BASE` 不是預設值時 WARN 並印出位址；`.env` 權限對群組或其他人開放時 WARN。
 
@@ -378,6 +387,16 @@ agent 用：
 
 **`leave --as <名稱> [原因|-]`**：發 `[LEAVE]`，`left` 設為 true，階段改為 `left`。任何階段都可用（`left` 除外）。輸出不印未讀提示，改印「已離開，不要再 wait 或重新 join」。
 
+**`avatar --as <名稱> --file <圖檔>`**：設定這個 agent 自己的頭像（建立或更新它的專屬 webhook）。不發任何訊息、不改 agent 狀態。
+1. 需要狀態檔（§6.1）；階段是 `left` 時拒絕（結束碼 3，同 `wait`）。沒給 `--file`、有位置參數，都是結束碼 2。
+2. 檢查圖檔（都是結束碼 2）：套用 §9 的路徑拒絕規則；檔案存在而且是一般檔案；大小大於 0、不超過 8 MB（Discord 官方文件沒有寫明 webhook 頭像的上限，這是工具自訂的，頭像建議 256×256 左右，通常遠小於 1 MB）；看檔頭判斷格式，只接受 PNG（`89 50 4E 47 0D 0A 1A 0A`）、JPEG（`FF D8 FF`）、GIF（`GIF87a`／`GIF89a`），不看副檔名；套用 §9 的秘密內容檢查（含 token 的檔案拒絕）。圖檔轉成 data URI（`data:image/png;base64,…`，MIME 依檔頭）。
+3. 取得專屬 webhook，名稱 `<webhookName>-<名稱小寫>`：
+   - 本機快取（`webhooks/<channelId>/<名稱小寫>.json`）有 id 與 token：`PATCH /webhooks/<id>/<token>` 只送 `avatar`。回 401 或 404 時刪掉快取，往下找或建立。
+   - 頻道的 webhook 清單裡有名稱完全相同、而且有 token 的（例如別台機器建立過），挑 ID 最小的，`PATCH` 頭像後寫入快取。
+   - 都沒有：`POST /channels/<id>/webhooks`，送 `name` 與 `avatar`，寫入快取（權限 0600）。
+   需要「管理 Webhook」權限；Discord 回 403 時說明缺這個權限；回 400 且錯誤碼是 30007（頻道 webhook 已達 15 個上限）時說明上限，並提示主導者用 `agentchat clear` 清掉專屬 webhook 或到頻道設定刪掉不用的 webhook；其他圖檔被拒（400、413，例如錯誤碼 50138、40005、50045）時說明 Discord 拒收這張圖、請換小一點的 PNG。都是結束碼 1（413 照 §6.2 是結束碼 2）。
+4. 輸出：`已設定 <名稱> 的頭像（<建立新的專屬 webhook|更新專屬 webhook|沿用頻道裡既有的專屬 webhook>，<webhook 名稱>，id=<id>）`，加一行「之後的發言會顯示這張頭像」。不印 token。`--json`：`{ ok, name, webhook: { id, name }, source: "created"|"updated"|"found", bytes, format }`。
+
 **`download --as <名稱> <訊息ID> [--out <目錄>] [--name <檔名>]`**
 - 重新 `GET` 那則訊息以取得新的附檔連結（舊連結會過期）。
 - 下載全部附檔，或只下載 `--name` 指定的那個；每個檔不超過 25 MB。
@@ -390,10 +409,11 @@ agent 用：
 3. 由新到舊翻頁（`before`，每頁 100）取得頻道目前所有訊息的 ID。之後才出現的訊息不刪。
 4. 確認：沒帶 `--yes` 時，在 stderr 印出頻道名稱、ID、要刪的則數、會清掉的本機狀態目錄，要求輸入頻道名稱；去掉頭尾空白與開頭一個 `#` 後必須和頻道名稱完全相同（分大小寫）。stdin 不是終端機（TTY）、輸入不符或輸入直接結束，都中止（結束碼 2），不刪任何訊息、不清狀態。stdin 不是終端機時的訊息不教 agent 加 `--yes`，寫「clear 是主導者專用指令，agent 不可以執行；主導者請在自己的終端機執行，或在自己的腳本裡加 --yes」；`help clear` 對 `--yes` 的說明也只寫成主導者在自己腳本裡用。
 5. 刪除：建立時間在「現在 − 14 天 + 1 小時」之後的，每批最多 100 則用 `POST /channels/<id>/messages/bulk-delete`；批次只剩 1 則時、以及更舊的訊息，逐則 `DELETE /channels/<id>/messages/<訊息ID>`。bulk-delete 回 400 時，那一批改成逐則刪。逐則刪回 404 算略過（已不存在），回 400 算失敗（例如不能刪的系統訊息），記下 ID 繼續。429 與 5xx、網路錯誤照 §7.4 的重試規則；其他錯誤（含 403、重試用盡）立刻中止（結束碼 1），訊息附「中止前已刪除 N 則，本機狀態沒有清除」，403 時說明缺「管理訊息」與修正方法，並附 Discord 的原始回應。
-6. 刪完（沒有中止，包括有失敗的）刪掉整個 `~/.agentchat/agents/<channelId>/`（各 agent 的狀態檔、wait 鎖與暫存檔），讓 agent 下次進房是乾淨的新身分；`webhooks/`、`logs/`、`downloads/` 保留（`logs/` 的發言紀錄與 `downloads/` 的附檔仍留有被刪訊息的內容，要徹底清除由主導者手動刪除）。只影響執行 `clear` 的這台機器。接著在同一個目錄為每個被清掉的 agent 留一個清除標記 `<名稱小寫>.cleared`（內容是 `{"name","clearedAt"}` 的 JSON；狀態檔或舊標記裡的名稱不符合名稱規則時，改用檔名去掉副檔名當名稱），刪除前已有的清除標記也重新寫回，讓還在跑、還沒重新 `join` 的 agent 下一個指令收到 §6.1 的「已被主導者 clear 清除」訊息，而不是被提示 `join`。標記只在狀態檔不存在時才看；`join` 建立新身分後狀態檔存在，標記不再有作用（`join` 順便刪掉自己的標記）。寫標記失敗不影響結果（訊息與狀態都已清掉），只在輸出加一行警告。刪目錄遇到別的行程正好在裡面建鎖檔時重試幾次。
+6. 刪完（沒有中止，包括有失敗的）先刪頻道裡本工具建立的專屬 webhook：`GET /channels/<id>/webhooks`，名稱以 `<webhookName>-` 開頭的逐個 `DELETE /webhooks/<id>`（bot 身分，需要「管理 Webhook」），回 404 算已不存在；共用 webhook（名稱等於 `webhookName`）保留。再刪掉本機的專屬 webhook 快取目錄 `webhooks/<channelId>/` 與辨識快取 `webhooks/<channelId>.known.json`（共用 webhook 快取 `webhooks/<channelId>.json` 保留）。查清單或刪 webhook 失敗不中止、不改結束碼，只在輸出加一行警告（附原因與已刪幾個），本機快取照樣刪除（失效的專屬 webhook 在發言時會自動改用共用 webhook，§6.2）。別台機器的專屬 webhook 快取不會被清，那些 agent 下次發言時發現失效就改用共用 webhook。
+   接著刪掉整個 `~/.agentchat/agents/<channelId>/`（各 agent 的狀態檔、wait 鎖與暫存檔），讓 agent 下次進房是乾淨的新身分；共用 webhook 快取、`logs/`、`downloads/` 保留（`logs/` 的發言紀錄與 `downloads/` 的附檔仍留有被刪訊息的內容，要徹底清除由主導者手動刪除）。只影響執行 `clear` 的這台機器。接著在同一個目錄為每個被清掉的 agent 留一個清除標記 `<名稱小寫>.cleared`（內容是 `{"name","clearedAt"}` 的 JSON；狀態檔或舊標記裡的名稱不符合名稱規則時，改用檔名去掉副檔名當名稱），刪除前已有的清除標記也重新寫回，讓還在跑、還沒重新 `join` 的 agent 下一個指令收到 §6.1 的「已被主導者 clear 清除」訊息，而不是被提示 `join`。標記只在狀態檔不存在時才看；`join` 建立新身分後狀態檔存在，標記不再有作用（`join` 順便刪掉自己的標記）。寫標記失敗不影響結果（訊息與狀態都已清掉），只在輸出加一行警告。刪目錄遇到別的行程正好在裡面建鎖檔時重試幾次。
    已知限制：`clear` 不拿各 agent 的鎖，所以執行當下還在跑的 agent 可能把狀態寫回來（例如正在 `join`、或剛好在更新狀態檔），也可能在第 3 步之後才發言、留在頻道上；SOP 要求主導者先讓 agent 都停下來再 `clear`。
-7. 輸出：`已清空 #<頻道名稱>：刪除 N 則（其中逐則刪除 M 則），略過 S 則（已不存在），失敗 F 則`；批次刪除的則數是送出的則數（Discord 對批次裡已不存在的訊息不報錯，所以不會算進略過）；有失敗時列出前 10 個 ID；清掉的 agent 名稱與目錄；提醒別台機器的狀態不會被清、agent 要回來就重新 `join`（不帶 `--resume`）。有失敗時結束碼 1。
-8. `--json`（照 §6.1）：`channel`（`id`、`name`）、`total`、`deleted`、`bulkDeleted`、`singleDeleted`、`skipped`、`failed`、`failedIds`、`clearedAgents`、`stateDir`、`markError`（寫清除標記失敗的原因，沒失敗是 `null`）；有失敗時 `ok` 為 false，`error.code` 為 1，同時附上這些欄位。
+7. 輸出：`已清空 #<頻道名稱>：刪除 N 則（其中逐則刪除 M 則），略過 S 則（已不存在），失敗 F 則`；批次刪除的則數是送出的則數（Discord 對批次裡已不存在的訊息不報錯，所以不會算進略過）；有失敗時列出前 10 個 ID；清掉的 agent 名稱與目錄；刪除的專屬 webhook 個數（失敗時是警告）；提醒別台機器的狀態不會被清、agent 要回來就重新 `join`（不帶 `--resume`）。有失敗時結束碼 1。
+8. `--json`（照 §6.1）：`channel`（`id`、`name`）、`total`、`deleted`、`bulkDeleted`、`singleDeleted`、`skipped`、`failed`、`failedIds`、`clearedAgents`、`stateDir`、`markError`（寫清除標記失敗的原因，沒失敗是 `null`）、`webhooksDeleted`（刪掉的專屬 webhook 個數）、`webhookError`（查清單或刪除失敗的原因，沒失敗是 `null`）；有失敗時 `ok` 為 false，`error.code` 為 1，同時附上這些欄位。
 
 ## 7. 核心模組 API
 
@@ -420,8 +440,8 @@ agent 用：
 | `splitAgentName(username)`（修改） | 回 `{ name, role }`；認得新格式 `角色（名稱）`（最後一對全形括號裡是符合名稱規則的字串，角色是它前面的全部）與舊格式 `名稱 (角色)`，兩者都不是時整個當名稱、`role` 為 `null` |
 | `isSelfName(username, name)`（修改） | 顯示名稱是否屬於這個 agent：`splitAgentName(username).name` 與 `name` 不分大小寫相等（新舊格式都認得） |
 | `sanitizeRole(role)`（修改） | 刪除（不是換成空白）括號（半形與全形）、`@`、`＠`、`#`、`:`、`：`、反引號；換行與連續空白換成一個 `-`，去掉頭尾的 `-`；`discord`、`clyde`（不分大小寫）換成 `dc`、`cl`，重複換到不再出現為止（Discord 拒收含這兩個字的 webhook 名稱）；截到 40 字；空字串回 `null`。例：`前端(主)` → `前端主`、`QA Lead` → `QA-Lead`、`Discord API` → `dc-API` |
-| `authorKind(raw, room, self, opts)`（修改） | §4.5；`opts.webhookId` 是本房 webhook ID |
-| `normalize(raw, room, self, opts)`（修改） | 回 `{ id, timestamp, kind, author, authorRole, authorId, content, tag, title, fields, body, mentionsMe, targetsMe, mentionsModerator, replyTo, attachments }`；`replyTo` 取自 `message_reference.message_id`；「回覆我的訊息」用 `self.ownMessageIds` 判斷（`self` 就是 agent 狀態物件）；`opts` 只帶 `webhookId`；`self` 可以是 `null` |
+| `authorKind(raw, room, self, opts)`（修改） | §4.5；`opts.webhookIds` 是本房 webhook ID 的集合（陣列或 `Set`），`opts.webhookId` 是單一 ID（舊介面，仍接受，兩者合併）；兩者都沒有或是空的時，webhook 訊息一律不歸為 `bot` |
+| `normalize(raw, room, self, opts)`（修改） | 回 `{ id, timestamp, kind, author, authorRole, authorId, content, tag, title, fields, body, mentionsMe, targetsMe, mentionsModerator, replyTo, attachments }`；`replyTo` 取自 `message_reference.message_id`；「回覆我的訊息」用 `self.ownMessageIds` 判斷（`self` 就是 agent 狀態物件）；`opts` 帶 `webhookIds` 或 `webhookId`（同 `authorKind`）；`self` 可以是 `null` |
 | `splitMessage(text, limit = 2000)` | 每段 ≤ limit；多段時每段結尾加 `(i/n)`；盡量在行邊界切；code fence 跨段時兩邊都補成對 |
 | `applyDirectives(state, messages, room)`（修改） | 依序逐則套用對我生效的主導者指令（§4.2、§5），每則都用**當下**的狀態判斷對象（例：同一批先 `[ASSIGN] @claude-1 role: 前端` 再 `[GO] @前端`，GO 對 claude-1 生效）；回傳給 agent 看的「注意」字串陣列；同時處理 §4.4 的清除 `pendingQuestionId`，以及 §5.4 的重設計時（別的 agent 的 `[JOIN]`／`[LEAVE]`／`[IDLE]` 不重設）。`messages` 是 `normalize()` 的結果，函式內依當下狀態重新判斷 `targetsMe` |
 | `reminders(state, room, now = Date.now())` | 依階段產生提醒字串陣列（§5.3 輪數、工作階段的進度提醒、`stopped`／`closed`／`idle` 的指示）。進度提醒從 `lastProgressAt` 算起，還沒回報過就從 `workStartedAt` 算起，超過 `progressReminderMin` 就提醒 |
@@ -434,7 +454,7 @@ agent 用：
 
 ### 7.3 `src/state.js`
 
-`STATE_DIR`、`loadAgent(channelId, name)`、`saveAgent(state)`、`newAgent({ name, vendor, model, channelId, cursor })`（修改：補 §5.1 新欄位）、`loadWebhook`、`saveWebhook`、`clearWebhook`、`appendLog`、`downloadDir`；`markCleared(channelId, names)`、`unmarkCleared(channelId, name)`、`missingAgentError(channelId, name, message)`（新增：§6.3 `clear` 第 6 步的清除標記，以及狀態檔不存在時依標記選擇 §6.1 的訊息）。
+`STATE_DIR`、`loadAgent(channelId, name)`、`saveAgent(state)`、`newAgent({ name, vendor, model, channelId, cursor })`（修改：補 §5.1 新欄位）、`loadWebhook`、`saveWebhook`、`clearWebhook`、`appendLog`、`downloadDir`；`markCleared(channelId, names)`、`unmarkCleared(channelId, name)`、`missingAgentError(channelId, name, message)`（新增：§6.3 `clear` 第 6 步的清除標記，以及狀態檔不存在時依標記選擇 §6.1 的訊息）；`loadAgentWebhook(channelId, name)`、`saveAgentWebhook(channelId, name, webhook)`（權限 0600）、`clearAgentWebhook(channelId, name)`、`listAgentWebhooks(channelId)`、`clearAgentWebhooks(channelId)`（專屬 webhook 快取，§3.3）；`loadKnownWebhooks(channelId)`、`saveKnownWebhooks(channelId, known)`、`clearKnownWebhooks(channelId)`（辨識快取，§4.5）。
 `saveAgent` 要原子寫入（暫存檔再改名）。
 
 ### 7.4 `src/discord.js`
@@ -442,6 +462,7 @@ agent 用：
 `createClient(token, { apiBase, retryBaseMs })`（修改：`apiBase` 預設讀 `AGENTCHAT_API_BASE`；`retryBaseMs` 是 5xx 與網路錯誤的退避基準，預設 1000，第 n 次重試等 `retryBaseMs × n`，測試可設小值）回傳的物件提供：
 `me()`、`application()`（新增，`GET /applications/@me`）、`channel(id)`、`messages(id, { after, before, limit })`（舊到新）、`messagesAfter(id, cursor, maxPages)`、`message(channelId, messageId)`、`listWebhooks(id)`、`createWebhook(id, name)`、`getWebhook(id, token)`（新增）、`executeWebhook(webhook, { content, username, avatarUrl, files, allowedMentions })`（`avatarUrl` 有值時送 `avatar_url`）、`download(url)`。
 `clear` 與 doctor 另外用到：`bulkDelete(channelId, messageIds)`（`POST /channels/<id>/messages/bulk-delete`，一次 2–100 則、只限 14 天內）、`deleteMessage(channelId, messageId)`（逐則刪除）、`guildMember(guildId, userId)`、`guildRoles(guildId)`（計算 bot 在頻道的權限用）。
+`avatar` 與 `clear` 另外用到：`createWebhook(id, name, avatar)`（`avatar` 是 data URI，選填）、`modifyWebhook(id, token, { avatar })`（`PATCH /webhooks/<id>/<token>`，不送 bot token）、`deleteWebhook(id)`（`DELETE /webhooks/<id>`，bot 身分）。
 另外 export `compareSnowflake`、`snowflakeNow`、`snowflakeToDate`。
 遇到 429 依 `retry_after` 等待重試（`retry_after` 超過 60 秒就不等，直接丟 `DiscordError`，訊息寫明要等幾秒），5xx 與網路錯誤退避重試；重試最多 5 次（加上第一次共 6 次請求）；401、403、404 給中文提示。
 例外：`executeWebhook`（發言）只在 429 時重試；5xx 與網路錯誤不重試，直接結束碼 1，訊息提示「可能已經送出，先用 agentchat read --as <名稱> --last 5 確認再決定要不要重發」（有 `roomArg` 時另帶 `--room`；這句由指令層組出，`discord.js` 不知道名稱與房間），以免重複發言。
@@ -466,8 +487,8 @@ agent 用：
 - 工具只允許通知主導者（§4.4 的 `allowed_mentions`）。
 - `download` 只存檔、不執行，檔名清理過才寫入。
 - **輸出清理**：所有來自頻道的字串（作者名稱、附檔名、訊息內文）輸出前都要中和控制字元：C0（保留 `\t`；內文的 `\n` 與 `\r` 照 §7.5 換行）、DEL、C1（`\x80`–`\x9f`）、U+2028／U+2029、雙向文字控制字元（U+202A–U+202E、U+2066–U+2069）換成 U+FFFD。作者名稱與附檔名另外把換行換成空白（`oneLine()`），包括 `wait` 第一行狀態列、`download` 的輸出與錯誤訊息、`status`／`join` 的議題附檔行。
-- **防止秘密送進頻道**（`--body-file`、`--file`、內文）：
-  - 比對的秘密包含：環境變數與 `.env` 裡的 `DISCORD_BOT_TOKEN`（兩者都收，不論實際用哪個、格式對不對），以及 `~/.agentchat/webhooks/` 底下每個快取檔的 webhook token。內文或附檔含任一個就拒絕（結束碼 2）。
+- **防止秘密送進頻道**（`--body-file`、`--file`、內文；`avatar --file` 也套用路徑拒絕與秘密內容檢查）：
+  - 比對的秘密包含：環境變數與 `.env` 裡的 `DISCORD_BOT_TOKEN`（兩者都收，不論實際用哪個、格式對不對），以及 `~/.agentchat/webhooks/` 底下每個快取檔（包括 `webhooks/<channelId>/` 裡的專屬 webhook 快取）的 webhook token。內文或附檔含任一個就拒絕（結束碼 2）。
   - 內容偵測：含 `-----BEGIN ... PRIVATE KEY-----`、`-----BEGIN PGP PRIVATE KEY BLOCK-----` 或 AWS access key（`AKIA` 加 16 個大寫英數字）就拒絕（結束碼 2），訊息說明原因。
   - 路徑拒絕（用 realpath 比對）：`~/.agentchat`（狀態目錄，含 `downloads/`；要轉傳下載的附檔，先用 `download --out` 存到別處）、工具目錄的 `.env`、`~/.ssh`（`*.pub` 與 `known_hosts` 放行）、`~/.aws`、`~/.gnupg`、`/proc`、`/sys`、`/dev`。拒絕時結束碼 2。
   - 讀檔後用實際讀到的位元組數再檢查一次大小上限（procfs 之類的檔案 stat 大小是 0）。

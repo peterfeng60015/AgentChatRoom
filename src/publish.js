@@ -16,7 +16,7 @@ import {
   waitText,
   splitMessage,
 } from './protocol.js';
-import { STATE_DIR, appendLog, clearWebhook, recordOwnMessages, updateAgent } from './state.js';
+import { STATE_DIR, appendLog, clearAgentWebhook, clearWebhook, loadAgentWebhook, recordOwnMessages, updateAgent } from './state.js';
 import { ENV_FILE, loadEnv } from './config.js';
 import os from 'node:os';
 import { countUnread, ensureWebhook, phaseOf, requireAgent, unreadLine } from './context.js';
@@ -215,16 +215,26 @@ function secretValues() {
   } catch {
     // .env 讀不到就沒有可比對的。
   }
+  // 共用 webhook 快取在 webhooks/ 底下，各 agent 的專屬 webhook 快取在 webhooks/<channelId>/ 底下。
   const dir = path.join(STATE_DIR, 'webhooks');
-  let names = [];
-  try {
-    names = fs.readdirSync(dir).filter((n) => n.endsWith('.json'));
-  } catch {
-    // 還沒有任何快取。
-  }
-  for (const n of names) {
+  const files = [];
+  const jsonFiles = (d) => {
     try {
-      const token = JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8'))?.token;
+      return fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return []; // 還沒有任何快取。
+    }
+  };
+  for (const e of jsonFiles(dir)) {
+    if (e.isDirectory()) {
+      for (const f of jsonFiles(path.join(dir, e.name))) {
+        if (f.isFile() && f.name.endsWith('.json')) files.push(path.join(dir, e.name, f.name));
+      }
+    } else if (e.name.endsWith('.json')) files.push(path.join(dir, e.name));
+  }
+  for (const file of files) {
+    try {
+      const token = JSON.parse(fs.readFileSync(file, 'utf8'))?.token;
       if (typeof token === 'string' && token) list.push(token);
     } catch {
       // 壞掉的快取不影響其他的。
@@ -294,8 +304,29 @@ export function checkSecretPath(abs, label) {
   if (reason) throw new UserError(`${label}${reason}，拒絕讀取：${abs}`);
 }
 
-// 經由本房 webhook 發言；快取的 webhook 被刪掉（404／401）時重新取得一次再試。
-async function execute(ctx, payload) {
+// §6.2 專屬 webhook 失效、改用共用 webhook 時，發言類指令輸出的提示。
+export function agentWebhookLostText(name, room) {
+  return `專屬 webhook 已失效，改用共用 webhook 發言；要換回自己的頭像請重新執行 ${cmdText(name, 'avatar', '--file <圖檔>', room)}`;
+}
+
+// 經由本房 webhook 發言。agent 有專屬 webhook（§6.2）時用它、不帶 avatar_url；它失效（404／401）時刪掉快取，
+// 改用共用 webhook 加 DiceBear 頭像，並在 ctx.agentWebhookLost 記下來讓輸出提示。
+// 共用 webhook 的快取被刪掉（404／401）時重新取得一次再試。
+async function execute(ctx, { fallbackAvatarUrl, ...payload }, name) {
+  const own = name ? loadAgentWebhook(ctx.room.channelId, name) : null;
+  if (own) {
+    try {
+      return await ctx.client.executeWebhook(own, payload);
+    } catch (e) {
+      if (!(e instanceof DiscordError) || ![401, 404].includes(e.status)) throw e;
+      clearAgentWebhook(ctx.room.channelId, name);
+      ctx.agentWebhookLost = true;
+    }
+  }
+  return executeShared(ctx, { ...payload, avatarUrl: fallbackAvatarUrl });
+}
+
+async function executeShared(ctx, payload) {
   let { webhook } = await ensureWebhook(ctx.client, ctx.room, { verify: false });
   try {
     return await ctx.client.executeWebhook(webhook, payload);
@@ -350,7 +381,7 @@ export async function sendParts(ctx, { name, role, vendor }, parts, files = []) 
   try {
     for (let i = 0; i < parts.length; i++) {
       const last = i === parts.length - 1;
-      const msg = await execute(ctx, { content: parts[i], username, avatarUrl: avatar, files: last ? files : [], allowedMentions });
+      const msg = await execute(ctx, { content: parts[i], username, fallbackAvatarUrl: avatar, files: last ? files : [], allowedMentions }, name);
       ids.push(msg.id);
     }
   } catch (e) {
@@ -460,7 +491,7 @@ export async function publish(ctx, opts) {
       unreadError = e.message;
     }
   }
-  return { state: updated, ids, tag, files: files.map((f) => f.filename), unread, unreadError };
+  return { state: updated, ids, tag, files: files.map((f) => f.filename), unread, unreadError, agentWebhookLost: Boolean(ctx.agentWebhookLost) };
 }
 
 // 發言類指令的共通輸出：訊息 ID、未讀、指令自己的補充、提醒。showUnread 為 false 時（leave）不印未讀。
@@ -473,6 +504,7 @@ export function publishResult(result, room, { lines = [], data = {}, showUnread 
     if (u) out.push(u);
     if (unreadError) out.push(`未讀：無法取得（${unreadError}）`);
   }
+  if (result.agentWebhookLost) out.push(agentWebhookLostText(state.name, room));
   out.push(...lines);
   const rem = reminders(state, room);
   const tail = section('提醒', rem);
@@ -488,6 +520,7 @@ export function publishResult(result, room, { lines = [], data = {}, showUnread 
       unreadCapped: showUnread && unread ? unread.capped : null,
       phase: phaseOf(state),
       reminders: rem,
+      ...(result.agentWebhookLost ? { agentWebhookLost: true } : {}),
       ...data,
     },
   };

@@ -1,6 +1,6 @@
 import { DiscordError, ProtocolError, UserError } from '../errors.js';
 import { buildStatus } from './status.js';
-import { applyEach, buildMessage, doctorText, reminders, splitAgentName } from '../protocol.js';
+import { applyEach, buildMessage, doctorText, reminders } from '../protocol.js';
 import { fmtTime, renderMessage, renderMessages, section } from '../render.js';
 import { appendLog, clearedText, loadAgent, newAgent, recordOwnMessages, saveAgent, unmarkCleared, wasCleared } from '../state.js';
 import {
@@ -77,14 +77,13 @@ function findActiveTopic(messages) {
   return index < 0 ? null : { topic: messages[index], after: messages.slice(index + 1) };
 }
 
-function findConflict(raws, room, name, webhookId, now) {
+// messages 是 normalizeAll(…, null) 的結果：本房 webhook（共用與各 agent 專屬，§4.5）的訊息都是 agent。
+function findConflict(messages, name, now) {
   const lower = name.toLowerCase();
-  for (let i = raws.length - 1; i >= 0; i--) {
-    const raw = raws[i];
-    if (!raw.webhook_id || (webhookId && raw.webhook_id !== webhookId)) continue;
-    if (splitAgentName(raw.author?.username).name.toLowerCase() !== lower) continue;
-    const [m] = normalizeAll([raw], room, null);
-    const age = now - Date.parse(raw.timestamp);
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.kind !== 'agent' || String(m.author).toLowerCase() !== lower) continue;
+    const age = now - Date.parse(m.timestamp);
     if (age < CONFLICT_WINDOW_MS && m.tag !== 'LEAVE' && m.tag !== 'IDLE') return m;
     return null;
   }
@@ -125,13 +124,13 @@ export async function run(ctx) {
     };
   }
 
-  const { webhook } = await ensureWebhook(client, room, { verify: true });
+  await ensureWebhook(client, room, { verify: true });
   const raws = await fetchRecent(client, room.channelId);
   const now = Date.now();
 
   // 走到這裡就是要建立新身分（本機沒有狀態檔、狀態檔已 leave，或 --force），檢查頻道裡有沒有別人在用；--force 跳過。
   if (!ctx.values.force) {
-    const clash = findConflict(raws, room, name, webhook.id, now);
+    const clash = findConflict(await normalizeAll(ctx, raws, null), name, now);
     if (clash) {
       throw new ProtocolError(
         `名稱 ${name} 在 24 小時內有人用過（最後一則 id=${clash.id}，不是 [LEAVE] 或 [IDLE]）。請換一個名稱，或確定是同一個 agent 時加 --force。`,
@@ -154,7 +153,7 @@ export async function run(ctx) {
     cursor: latest,
   });
 
-  const messages = normalizeAll(raws, room, state);
+  const messages = await normalizeAll(ctx, raws, state);
   const active = findActiveTopic(messages);
   const notes = [];
   let applied = [];

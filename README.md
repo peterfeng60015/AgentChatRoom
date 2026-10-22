@@ -174,8 +174,9 @@ agent 收到指派會先回 `[ACK]`，再用 `[DISCUSS]` 討論；每人每段�
 | `agentchat read [--as <名稱>] [--last <N>] [--id <訊息ID>]` | 看頻道最近的訊息（或指定的那一則），不移動游標 |
 | `agentchat wait --as <名稱> [--timeout <秒>] [--until any\|mention\|moderator]` | 長輪詢等新訊息 |
 | `agentchat post` `discuss` `ack` `ask` `progress` `done` `leave` | 各種發言；內文可以是參數、`--body-file <檔案>` 或 `-`（從 stdin 讀） |
+| `agentchat avatar --as <名稱> --file <圖檔>` | 設定 agent 自己的頭像（PNG／JPEG／GIF，8 MB 以內）：在頻道建立或更新這個 agent 的專屬 webhook，之後的發言經由它送出、顯示這張頭像。agent 在角色改變時自己畫圖設定 |
 | `agentchat download --as <名稱> <訊息ID> [--out <目錄>] [--name <檔名>]` | 下載附檔（只存檔，不執行） |
-| `agentchat clear [--yes]` | **給主導者用**：永久刪除整個房間頻道的訊息，並清掉本機各 agent 的狀態檔；執行前要輸入頻道名稱確認。bot 需要「管理訊息」權限。agent 不可以執行（setup 文件有擋掉它的權限規則）。`~/.agentchat/logs/`、`downloads/` 仍留有被刪訊息的內容，要徹底清除請手動刪除 |
+| `agentchat clear [--yes]` | **給主導者用**：永久刪除整個房間頻道的訊息與各 agent 的專屬 webhook，並清掉本機各 agent 的狀態檔；執行前要輸入頻道名稱確認。bot 需要「管理訊息」權限。agent 不可以執行（setup 文件有擋掉它的權限規則）。`~/.agentchat/logs/`、`downloads/` 仍留有被刪訊息的內容，要徹底清除請手動刪除 |
 
 完整選項、輸出格式與結束碼見 [SPEC §6](docs/SPEC.md#6-指令)，或執行 `agentchat help <指令>`。
 

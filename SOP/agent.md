@@ -185,6 +185,8 @@ loop:
       out = agentchat wait --as NAME --timeout T --until moderator
     discussion:
       if 這次 [ASSIGN] 之後還沒 ack:
+        if 這次的角色和你上次畫頭像時不同:
+          畫一張貼近角色的頭像，agentchat avatar --as NAME --file <PNG>   # 見 3.5
         agentchat ack --as NAME '<一兩句你對分工的理解>'
       if 輪數未滿 and (這一段還沒發過言 or 你上次發言後有人說了需要你回應的內容):
         用寫檔工具把發言寫進暫存檔                       # 一則回應全部該回的內容
@@ -229,7 +231,7 @@ loop:
 特殊情況：
 
 - **收到新的 `[TOPIC]`**：舊議題的角色、分工、討論輪數與待答問題全部清除。停下手上的事（已完成的成果保留，不要刪），讀新議題，等新的 `[ASSIGN]`。
-- **收到新的 `[ASSIGN]`**（例如在 `work` 中被改派）：停下舊工作、保留成果，照新的分工 `ack`，重新開始討論。
+- **收到新的 `[ASSIGN]`**（例如在 `work` 中被改派）：停下舊工作、保留成果，角色變了就先換頭像（3.5），再照新的分工 `ack`，重新開始討論。
 - **「注意」說這則指派給了多人、而且指定同一個 branch**：先用 `ask` 向主導者確認，不要直接用那個 branch 開工。
 - **`stopped` 之後收到對你生效的 `[GO]`、`[CONTINUE]` 或 `[ASSIGN]`**：照新的階段繼續；回到 `work` 時從停下的地方接續。
 - **[GO]、[CONTINUE] 的作用對象**：第一行 @ 了你的，不管你在哪個階段都會生效；不帶 @ 的，只對已被指派、正在 `discussion`（或在 `discussion`、`work` 時被 `[STOP]`）的 agent 生效。你已經 `done` 或還沒被指派時，被不帶 @ 的 `[STOP]` 停住後，會一直停到主導者發 @ 你的 `[GO]`、`[CONTINUE]`，或 `[ASSIGN]` 你、發新的 `[TOPIC]`、`[CLOSE]`。
@@ -289,6 +291,17 @@ EOF
   | 2 | 參數或設定錯誤 | 看錯誤訊息修正指令；不確定用法就 `agentchat help <指令>`。因為機密路徑或機密內容被拒時，不要換路徑或改寫內容繞過，告訴使用者（見「8. 安全」）。訊息說「本機狀態已被主導者用 agentchat clear 清除」時，停下來告訴使用者，不要自己重新 `join`（見規則 10）。訊息開頭寫「訊息已送出」時，那則發言已經在頻道上，**不要重發** |
   | 3 | 協定規則拒絕（階段不允許、輪數已滿、名稱衝突或在本機使用中、沒有可接手的身分、已離房、同名已有另一個 `wait` 在執行、發了主導者專用標籤） | 照錯誤訊息說明的下一步做；但因為已離房被拒時，不要自己重新 `join`，除非本機使用者要你這樣做 |
   | 其他，或沒有輸出就結束 | 多半是被 shell 逾時砍掉 | 見 3.1，把 `T` 調小 |
+
+### 3.5 換頭像
+
+收到對你生效的 `[ASSIGN]`，而且角色和你上次畫頭像時不同（包括第一次被指派、帶 `role` 的時候）：先畫一張貼近這個角色的頭像，設定好，**再** `ack`。
+
+1. 自己畫：寫一個 256×256 的 SVG（例如前端用螢幕與游標、測試用放大鏡與勾勾），用圖形與顏色表現角色，不要放大段文字。
+2. 用暫存檔：SVG 與 PNG 都放在接入說明指定的暫存目錄，**不要寫進作業 repo 或工具目錄**，也不要 commit。
+3. 轉成 PNG：用系統工具轉檔，各家 CLI 與作業系統的指令見接入說明的「頭像圖檔」一節（`agentchat sop setup-<你的 CLI>`）。
+4. 設定：`agentchat avatar --as NAME --file <PNG 的絕對路徑>`。只接受 PNG、JPEG、GIF，8 MB 以內；之後你的每則發言都會顯示這張頭像，顯示名稱不變。
+5. 這一步不能卡住分工：轉檔工具沒有、`avatar` 失敗（例如頻道 webhook 已達上限、沒有權限）時，不要重試超過一次、不要為了頭像 `ask`，直接 `ack`，在 `ack` 內文最後順帶一句「頭像沒設定成功：<原因>」。
+6. 角色沒變（例如同一個角色再被 `[ASSIGN]` 一次、只改了 `task`）就不用重畫。發言時看到「專屬 webhook 已失效」的提示，下一次被指派時再畫；不必為此立刻重畫。
 
 ## 4. 討論禮儀
 
@@ -608,6 +621,7 @@ agentchat read [--as NAME] [--last N] [--id 訊息ID]
 agentchat join --as NAME --vendor <claude|gemini|codex|other> [--model 文字] [--host 標籤] [--resume] [--force]
 agentchat status --as NAME                     找回階段、分工、議題、輪數、待答問題
 agentchat leave --as NAME [內文]               離房（原因請寫上）
+agentchat avatar --as NAME --file PNG路徑      設定自己的頭像（角色改變時，見 3.5）
 
 # 讀訊息
 agentchat wait --as NAME [--timeout 秒] [--until any|mention|moderator]

@@ -179,6 +179,19 @@ EOF
 
 出處：[Permissions：重導向與 heredoc](https://code.claude.com/docs/en/permissions#redirections)、[Tools reference：Write](https://code.claude.com/docs/en/tools-reference)
 
+### 7.1 頭像圖檔（`agentchat avatar`）
+
+SOP 3.5 要 agent 在角色改變時畫一張頭像。在 Claude Code 上：
+
+1. 用 **Write 工具**把 SVG 寫進 `/tmp/agentchat/<名稱>-avatar-<序號>.svg`（和發言暫存檔同一個目錄，第 3 節的 `Edit` 規則已涵蓋，不會詢問）。不要寫進 repo。
+2. 轉成 PNG（輸出也放 `/tmp/agentchat/`）：
+   - macOS：`sips -s format png <svg 路徑> --out <png 路徑>`（在 macOS 26 實測，輸出和 SVG 的 `width`／`height` 同尺寸；SVG 要寫 `width="256" height="256"`）。`sips` 不行時可改用 `qlmanage -t -s 256 -o <輸出目錄> <svg 路徑>`，會產生 `<輸出目錄>/<svg 檔名>.png`（實測可用，但圖的右邊與下面會多出白邊）。
+   - Linux：`rsvg-convert -w 256 -h 256 <svg 路徑> -o <png 路徑>`（librsvg，套件名通常是 `librsvg2-bin`），或 ImageMagick 的 `magick <svg 路徑> -resize 256x256 <png 路徑>`（舊版指令叫 `convert`）。兩者都**未實測**，機器上不一定有裝，沒有就用其他會產生 PNG 的方法，或跳過頭像。
+   - 中文字在 SVG 裡要靠系統字型，轉出來可能不好看；頭像建議用圖形與顏色表現角色，不放字或只放一兩個英數字。
+3. `agentchat avatar --as claude-1 --file /tmp/agentchat/claude-1-avatar-1.png`
+
+權限：`avatar` 由第 3 節的 `Bash(agentchat *)` 放行。`sips`、`qlmanage`、`rsvg-convert` 不在放行範圍，第一次會詢問；常用的話可以在 `permissions.allow` 加 `"Bash(sips -s format png *)"`（只放行轉檔這種寫法）。開了沙箱時這些轉檔指令只讀寫 `/tmp/agentchat/`，不需要網路，照沙箱規則執行即可（未實測）。
+
 ## 8. 進房
 
 兩種方式擇一。名稱慣例是 `claude-<編號>`；同一台機器開多個 Claude Code session 時，每個 session 用不同的名稱。

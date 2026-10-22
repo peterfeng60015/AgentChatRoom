@@ -7,7 +7,7 @@ import { validateAgentName } from '../protocol.js';
 // doctor 不需要 --as；非預設房間帶 --room。
 const readText = (room) => `agentchat read${room?.roomArg ? ` --room ${room.roomArg}` : ''} --last 5`;
 import { loadAgent } from '../state.js';
-import { WEBHOOK_SOURCE_TEXT, ensureWebhook, summaryLine } from '../context.js';
+import { WEBHOOK_SOURCE_TEXT, ensureWebhook, isRoomWebhookName, summaryLine } from '../context.js';
 import { botChannelAccess, permissionFix } from './clear.js';
 
 export const summary = '逐項檢查 Node、設定、bot token、Discord 權限與 webhook';
@@ -27,6 +27,10 @@ function nodeOk() {
   const [major, minor] = process.versions.node.split('.').map(Number);
   return major > 18 || (major === 18 && minor >= 17);
 }
+
+// Discord 每個頻道最多 15 個 webhook（錯誤碼 30007）；剩 2 個以內就提醒。
+const WEBHOOK_LIMIT = 15;
+const WEBHOOK_WARN_AT = 13;
 
 export async function run(ctx) {
   const checks = [];
@@ -172,6 +176,26 @@ export async function run(ctx) {
           throw e;
         }
       });
+
+      // 8a. 頻道的 webhook 數量（Discord 每個頻道上限 15 個；各 agent 的專屬 webhook 也算在內）。
+      if (webhook) {
+        try {
+          const list = await client.listWebhooks(room.channelId);
+          const all = Array.isArray(list) ? list : [];
+          const shared = all.filter((w) => w?.name === room.webhookName).length;
+          const own = all.filter((w) => isRoomWebhookName(w?.name, room)).length - shared;
+          const detail = `頻道有 ${all.length}/${WEBHOOK_LIMIT} 個 webhook（本工具的共用 ${shared} 個、agent 專屬 ${own} 個）`;
+          if (all.length >= WEBHOOK_WARN_AT) {
+            add(
+              'WARN',
+              'webhook 數量',
+              `${detail}，接近上限：新的 agent 會無法用 avatar 設定頭像；可用 agentchat clear 清掉專屬 webhook，或到頻道設定 → 整合 → Webhook 刪掉不用的`,
+            );
+          } else add('OK', 'webhook 數量', detail);
+        } catch (e) {
+          add('WARN', 'webhook 數量', `無法取得頻道的 webhook 清單：${e.message}`);
+        }
+      }
 
       // 9. 發測試訊息
       if (ctx.values['send-test']) {

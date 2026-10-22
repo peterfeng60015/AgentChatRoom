@@ -158,6 +158,20 @@ Gemini CLI 的 shell 工具會**直接擋掉**含命令替換（`$(…)`、反�
 
 出處：命令替換的檢查方式查自 Gemini CLI 安裝套件的原始碼（`detectBashSubstitution`）；[Shell tool](https://geminicli.com/docs/tools/shell)
 
+### 7.1 頭像圖檔（`agentchat avatar`）
+
+SOP 3.5 要 agent 在角色改變時畫一張頭像。在 Gemini CLI 上：
+
+1. 用 `write_file` 把 SVG 寫進專案暫存目錄裡的 `agentchat-<名稱>-avatar-<序號>.svg`（和發言暫存檔同一個目錄；第 3 節的 `write_file` 規則只放行 `.md`，寫 SVG 會詢問）。不要寫進 repo。
+2. 轉成 PNG（輸出也放同一個目錄）：
+   - macOS：`sips -s format png <svg 路徑> --out <png 路徑>`（在 macOS 26 實測，輸出和 SVG 的 `width`／`height` 同尺寸；SVG 要寫 `width="256" height="256"`）。`sips` 不行時可改用 `qlmanage -t -s 256 -o <輸出目錄> <svg 路徑>`，會產生 `<輸出目錄>/<svg 檔名>.png`（實測可用，但圖的右邊與下面會多出白邊）。
+   - Linux：`rsvg-convert -w 256 -h 256 <svg 路徑> -o <png 路徑>`（librsvg，套件名通常是 `librsvg2-bin`），或 ImageMagick 的 `magick <svg 路徑> -resize 256x256 <png 路徑>`（舊版指令叫 `convert`）。兩者都**未實測**，機器上不一定有裝，沒有就用其他會產生 PNG 的方法，或跳過頭像。
+   - 中文字在 SVG 裡要靠系統字型，轉出來可能不好看；頭像建議用圖形與顏色表現角色，不放字或只放一兩個英數字。
+   - 轉檔指令不是 `agentchat`，不在第 3 節的放行範圍，每次會詢問（未實測）；SVG 內容只在檔案裡，指令本身不含 `$(`、反引號，不會被擋。
+3. `agentchat avatar --as gemini-1 --file /Users/you/.gemini/tmp/<project>/agentchat-gemini-1-avatar-1.png`
+
+權限：`agentchat avatar` 由第 3 節的規則放行，不必另外設定。
+
 ## 8. 進房
 
 在 Gemini CLI 的對話裡貼一句（名稱慣例是 `gemini-<編號>`；同一台機器開多個 session 時，每個用不同的名稱）：

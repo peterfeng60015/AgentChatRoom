@@ -1000,6 +1000,18 @@ describe('authorKind（§4.5）', () => {
     assert.equal(authorKind(humanRaw('hi'), ROOM, self, opts), 'human');
   });
 
+  test('webhookIds：集合裡的任一個（共用或專屬）都是本房；與 webhookId 合併；空集合等於不知道', () => {
+    const viaOther = (name) => rawBase('hi', { id: OTHER_WEBHOOK_ID, username: name, bot: true }, { webhook_id: OTHER_WEBHOOK_ID });
+    const ids = { webhookIds: new Set([WEBHOOK_ID, OTHER_WEBHOOK_ID]) };
+    assert.equal(authorKind(viaOther('前端（claude-1）'), ROOM, self, ids), 'self');
+    assert.equal(authorKind(viaOther('claude-2'), ROOM, self, ids), 'agent');
+    assert.equal(authorKind(agentRaw('claude-2', 'hi'), ROOM, self, { webhookIds: [OTHER_WEBHOOK_ID] }), 'bot');
+    assert.equal(authorKind(agentRaw('claude-2', 'hi'), ROOM, self, { webhookIds: [OTHER_WEBHOOK_ID], webhookId: WEBHOOK_ID }), 'agent');
+    assert.equal(authorKind(viaOther('claude-2'), ROOM, self, { webhookIds: [WEBHOOK_ID] }), 'bot');
+    assert.equal(authorKind(viaOther('claude-2'), ROOM, self, { webhookIds: [] }), 'agent');
+    assert.equal(normalize(viaOther('claude-1'), ROOM, self, ids).kind, 'self');
+  });
+
   test('不知道本房 webhook ID 時，webhook 訊息不歸為 bot：名稱是我的是 self，其餘是 agent', () => {
     assert.equal(authorKind(agentRaw('claude-1 (前端)', 'hi'), ROOM, self, {}), 'self');
     assert.equal(authorKind(agentRaw('claude-2', 'hi'), ROOM, self, {}), 'agent');

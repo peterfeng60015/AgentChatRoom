@@ -5,7 +5,7 @@ import { snowflakeToDate } from '../discord.js';
 import { DiscordError, UserError } from '../errors.js';
 import { validateAgentName } from '../protocol.js';
 import { cleanText, oneLine } from '../render.js';
-import { STATE_DIR, markCleared } from '../state.js';
+import { STATE_DIR, clearAgentWebhooks, clearKnownWebhooks, markCleared } from '../state.js';
 
 export const summary = '（主導者用）永久刪除房間頻道的所有訊息，並清掉本機各 agent 的狀態';
 export const usage = 'agentchat clear [--yes]';
@@ -13,7 +13,7 @@ export const options = { yes: { type: 'boolean', default: false } };
 export const details = [
   '刪除頻道裡所有人的訊息（主導者、agent、其他人），無法復原；需要 bot 在頻道有「管理訊息」權限。',
   '這是主導者專用指令，agent 不可以執行（也不接受 --as）。主導者在自己的終端機執行，會要求輸入頻道名稱確認；主導者自己的腳本裡才加 --yes 跳過確認。',
-  '刪完清掉本機 ~/.agentchat/agents/<頻道ID>/ 底下各 agent 的狀態檔與 wait 鎖，webhook 快取保留；logs/、downloads/ 仍留有被刪訊息的內容，要徹底清除請手動刪除。',
+  '刪完一併刪掉頻道裡各 agent 的專屬 webhook（avatar 建立的，共用 webhook 保留）與本機的專屬 webhook 快取，再清掉本機 ~/.agentchat/agents/<頻道ID>/ 底下各 agent 的狀態檔與 wait 鎖；共用 webhook 快取保留；logs/、downloads/ 仍留有被刪訊息的內容，要徹底清除請手動刪除。',
   '14 天內的訊息每批 100 則一起刪；更舊的逐則刪，數量多時會比較久。',
 ];
 
@@ -162,6 +162,35 @@ function clearAgentStates(channelId) {
   return { dir, agents, markError };
 }
 
+// §6.3 clear 第 6 步：刪掉頻道裡本工具建立的專屬 webhook（名稱以 `<webhookName>-` 開頭），共用 webhook 保留；
+// 再刪本機的專屬 webhook 快取與辨識快取。Discord 那邊失敗只回傳警告，本機快取照樣刪。
+async function clearAgentWebhookHooks(client, room) {
+  let deleted = 0;
+  let error = null;
+  try {
+    const list = await client.listWebhooks(room.channelId);
+    const prefix = `${room.webhookName}-`;
+    for (const w of Array.isArray(list) ? list : []) {
+      if (typeof w?.name !== 'string' || !w.name.startsWith(prefix)) continue;
+      try {
+        await client.deleteWebhook(w.id);
+        deleted++;
+      } catch (e) {
+        if (!(e instanceof DiscordError) || e.status !== 404) throw e;
+      }
+    }
+  } catch (e) {
+    error = e.message;
+  }
+  try {
+    clearAgentWebhooks(room.channelId);
+    clearKnownWebhooks(room.channelId);
+  } catch (e) {
+    error = [error, `本機專屬 webhook 快取刪除失敗：${e.code || e.message}`].filter(Boolean).join('；');
+  }
+  return { deleted, error };
+}
+
 export async function run(ctx) {
   if (ctx.values.as !== undefined) {
     throw new UserError('clear 是主導者在終端機用的指令，不接受 --as（agent 不可以執行 clear）');
@@ -197,7 +226,7 @@ export async function run(ctx) {
       ctx.stdin,
       [
         `即將永久刪除 #${name}（頻道 ${room.channelId}）目前的 ${ids.length} 則訊息（主導者、agent、其他人的都刪），無法復原；`,
-        `並清除本機 ${stateDir} 底下各 agent 的狀態檔與 wait 鎖（webhook 快取保留）。`,
+        `並刪除頻道裡各 agent 的專屬 webhook（共用 webhook 保留），清除本機 ${stateDir} 底下各 agent 的狀態檔與 wait 鎖與專屬 webhook 快取。`,
         `確認請輸入頻道名稱 ${name}：`,
       ].join('\n'),
     );
@@ -254,6 +283,7 @@ export async function run(ctx) {
   }
   for (const id of old) await deleteOne(id);
 
+  const hooks = await clearAgentWebhookHooks(client, room);
   const cleared = clearAgentStates(room.channelId);
   const deleted = bulkDeleted + singleDeleted;
   const failed = failedIds.length;
@@ -263,9 +293,13 @@ export async function run(ctx) {
   if (failed) text.push(`刪除失敗的訊息 ID：${failedIds.slice(0, 10).join(', ')}${failed > 10 ? ` 等 ${failed} 則` : ''}`);
   text.push(
     cleared.agents.length
-      ? `已清除本機 ${cleared.agents.length} 個 agent 的狀態檔與 wait 鎖（${cleared.agents.map(oneLine).join('、')}）：${cleared.dir}；webhook 快取保留`
-      : `本機沒有這個房間的 agent 狀態（${cleared.dir}）；webhook 快取保留`,
+      ? `已清除本機 ${cleared.agents.length} 個 agent 的狀態檔與 wait 鎖（${cleared.agents.map(oneLine).join('、')}）：${cleared.dir}；共用 webhook 快取保留`
+      : `本機沒有這個房間的 agent 狀態（${cleared.dir}）；共用 webhook 快取保留`,
   );
+  text.push(`已刪除頻道裡 ${hooks.deleted} 個 agent 專屬 webhook（共用 webhook 保留）`);
+  if (hooks.error) {
+    text.push(`警告：刪除專屬 webhook 沒有完成（${hooks.error}）；可到頻道設定 → 整合 → Webhook 手動刪掉名稱以 ${room.webhookName}- 開頭的`);
+  }
   if (cleared.markError) {
     text.push(`警告：清除標記寫入失敗（${cleared.markError}），還在跑的 agent 下一個指令會被提示 join 而不是停下來`);
   }
@@ -284,6 +318,8 @@ export async function run(ctx) {
       clearedAgents: cleared.agents,
       stateDir: cleared.dir,
       markError: cleared.markError,
+      webhooksDeleted: hooks.deleted,
+      webhookError: hooks.error,
     },
     code: failed ? 1 : 0,
     error: failed ? `有 ${failed} 則訊息刪除失敗` : undefined,

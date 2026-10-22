@@ -33,7 +33,7 @@ export async function run(ctx) {
     raws = await ctx.client.messages(room.channelId, { limit });
     head = raws.length ? `頻道最近 ${raws.length} 則（舊的在前）：` : '頻道目前沒有訊息。';
   }
-  const list = normalizeAll(raws, room, self);
+  const list = await normalizeAll(ctx, raws, self);
   return {
     text: list.length ? [head, renderMessages(list, { as: self?.name, room })] : head,
     data: { messages: list.map(publicMessage) },

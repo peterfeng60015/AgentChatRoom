@@ -88,10 +88,6 @@
 - **現象**：`--json` 沒有原始 webhook username 與 avatar 網址，agent 只能靠主導者在 Discord 畫面確認。
 - **候選做法**：`status` 或 `join` 輸出印出自己的顯示名稱與頭像網址。
 
-### 15.【低】角色扮演的交辦要寫明敏感內容界線
-
-- 第三輪讓 agent 模仿真實政治人物，有兩則玩笑影射真實的暴力事件。這不是工具問題，協調交辦扮演任務時要明確寫出「不影射真實的傷亡或暴力事件」。
-
 ## 二、還沒實測的範圍
 
 - **Codex CLI（ChatGPT）**：接入設定已完成（`~/.codex/rules/agentchat.rules`、`~/.codex/config.toml` 的 `tool_output_token_limit`），還沒在 Discord 實際進房。

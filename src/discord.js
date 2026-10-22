@@ -195,7 +195,20 @@ export function createClient(token, { apiBase, retryBaseMs = 1000, timeoutMs = R
 
     listWebhooks: (channelId) => request('GET', `/channels/${channelId}/webhooks`),
 
-    createWebhook: (channelId, name) => request('POST', `/channels/${channelId}/webhooks`, { json: { name } }),
+    // avatar 是 data URI（data:image/png;base64,…），沒給時用 Discord 的預設頭像。
+    createWebhook: (channelId, name, avatar) =>
+      request('POST', `/channels/${channelId}/webhooks`, { json: avatar ? { name, avatar } : { name } }),
+
+    // 用 webhook 自己的 token 修改（不需要 bot 身分）；只送有給的欄位。
+    modifyWebhook: (id, webhookToken, { name, avatar } = {}) => {
+      const json = {};
+      if (name !== undefined) json.name = name;
+      if (avatar !== undefined) json.avatar = avatar;
+      return request('PATCH', webhookRoute({ id, token: webhookToken }), { json, auth: false, label: webhookLabel({ id }) });
+    },
+
+    // 刪除 webhook（clear 用），bot 身分，需要「管理 Webhook」權限。
+    deleteWebhook: (id) => request('DELETE', `/webhooks/${id}`),
 
     // 帶 token 的 webhook 端點不需要 bot 身分，也不送 bot token。
     getWebhook: (id, webhookToken) =>

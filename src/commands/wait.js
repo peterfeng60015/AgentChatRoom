@@ -74,7 +74,7 @@ async function waitLocked(ctx, room, initial, timeout, until) {
     for (const raw of raws) if (compareSnowflake(raw.id, lastSeen) > 0) lastSeen = raw.id;
     // 每輪重讀狀態檔：等待期間同一個 agent 可能另外 ask 或發言，回覆那些訊息也要算「提到我」。
     const live = loadAgent(room.channelId, state.name) ?? state;
-    for (const m of normalizeAll(raws, room, live)) {
+    for (const m of await normalizeAll(ctx, raws, live)) {
       if (m.kind === 'self' || seen.has(m.id)) continue;
       seen.add(m.id);
       collected.push(m);

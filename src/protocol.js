@@ -339,11 +339,13 @@ export function sanitizeRole(role) {
   return truncate(cleaned, ROLE_LIMIT) || null;
 }
 
-// §4.5 作者身分。opts.webhookId 是本房 webhook；不知道時所有 webhook 訊息都算本房。
+// §4.5 作者身分。opts.webhookIds（集合）與 opts.webhookId（單一，舊介面）是本房 webhook；都沒有時所有 webhook 訊息都算本房。
 export function authorKind(raw, room, self, opts = {}) {
   if (raw?.author?.id && raw.author.id === room.moderatorUserId) return 'moderator';
   if (raw?.webhook_id) {
-    if (opts.webhookId && raw.webhook_id !== opts.webhookId) return 'bot';
+    const ids = new Set(opts.webhookIds ?? []);
+    if (opts.webhookId) ids.add(opts.webhookId);
+    if (ids.size && !ids.has(raw.webhook_id)) return 'bot';
     if (self && isSelfName(raw.author?.username, self.name)) return 'self';
     return 'agent';
   }

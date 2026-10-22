@@ -5,6 +5,7 @@ import http from 'node:http';
 const EPOCH = 1420070400000n;
 
 const BOT_ROLE_ID = '600000000000000006';
+const AVATAR_RE = /^data:image\/(png|jpeg|gif);base64,[A-Za-z0-9+/]+=*$/;
 
 export const DEFAULTS = {
   token: 'test-bot-token',
@@ -48,6 +49,7 @@ export async function startMockDiscord(options = {}) {
   const faults = []; // 模擬錯誤
   const bulkDeletes = []; // 每次 bulk-delete 成功刪掉的 ID
   const deletes = []; // 逐則刪掉的 ID
+  const webhookDeletes = []; // DELETE /webhooks/:id 刪掉的 webhook ID
   let lastId = 0n;
   let base = '';
 
@@ -130,8 +132,10 @@ export async function startMockDiscord(options = {}) {
   }
 
   // token 做得和真的一樣長（約 68 字），測試「token 不能送進頻道」時才比得到。
-  function addWebhook({ name = 'agentchat', token = `wh-token-${webhooks.length + 1}-${'k'.repeat(56)}`, channelId = cfg.channelId } = {}) {
-    const hook = { id: nextId(), type: 1, name, token, channel_id: channelId, guild_id: cfg.guildId };
+  let webhookSeq = 0;
+  function addWebhook({ name = 'agentchat', token = `wh-token-${++webhookSeq}-${'k'.repeat(56)}`, channelId = cfg.channelId, avatar = null } = {}) {
+    // avatar 存收到的 data URI（真的 Discord 存成雜湊）。
+    const hook = { id: nextId(), type: 1, name, token, channel_id: channelId, guild_id: cfg.guildId, avatar };
     webhooks.push(hook);
     return hook;
   }
@@ -266,10 +270,32 @@ export async function startMockDiscord(options = {}) {
         return json(res, 200, rest);
       }
       if (req.method === 'POST') return executeWebhook(req, res, hook, url.searchParams, raw);
+      if (req.method === 'PATCH') {
+        const body = JSON.parse(raw.toString('utf8') || '{}');
+        if (body.avatar !== undefined && body.avatar !== null && !AVATAR_RE.test(body.avatar)) {
+          return json(res, 400, { message: 'Invalid Form Body', code: 50035, errors: { avatar: { _errors: [{ code: 'IMAGE_INVALID', message: 'Invalid image data' }] } } });
+        }
+        if (body.avatar !== undefined) hook.avatar = body.avatar;
+        if (body.name !== undefined) hook.name = body.name;
+        const { token, ...rest } = hook;
+        return json(res, 200, rest);
+      }
       return json(res, 405, { message: '405: Method Not Allowed', code: 0 });
     }
 
     if (auth !== `Bot ${cfg.token}`) return json(res, 401, { message: '401: Unauthorized', code: 0 });
+
+    // 刪除 webhook（bot 身分，需要管理 Webhook）。
+    const delHook = path.match(/^\/webhooks\/(\d+)$/);
+    if (req.method === 'DELETE' && delHook) {
+      if (!cfg.webhookPermission) return json(res, 403, { message: 'Missing Permissions', code: 50013 });
+      const i = webhooks.findIndex((w) => w.id === delHook[1]);
+      if (i < 0) return json(res, 404, { message: 'Unknown Webhook', code: 10015 });
+      webhooks.splice(i, 1);
+      webhookDeletes.push(delHook[1]);
+      res.writeHead(204);
+      return res.end();
+    }
 
     if (req.method === 'GET' && path === '/users/@me') {
       return json(res, 200, { id: cfg.botId, username: 'agentchat-bot', discriminator: '0', bot: true });
@@ -351,7 +377,14 @@ export async function startMockDiscord(options = {}) {
         if (req.method === 'GET') return json(res, 200, webhooks.filter((w) => w.channel_id === cfg.channelId));
         if (req.method === 'POST') {
           const body = JSON.parse(raw.toString('utf8') || '{}');
-          return json(res, 200, addWebhook({ name: body.name }));
+          // 真的 Discord：每個頻道最多 15 個 webhook；avatar 必須是 PNG／JPEG／GIF 的 data URI。
+          if (webhooks.filter((w) => w.channel_id === cfg.channelId).length >= 15) {
+            return json(res, 400, { message: 'Maximum number of webhooks reached (15)', code: 30007 });
+          }
+          if (body.avatar !== undefined && body.avatar !== null && !AVATAR_RE.test(body.avatar)) {
+            return json(res, 400, { message: 'Invalid Form Body', code: 50035 });
+          }
+          return json(res, 200, addWebhook({ name: body.name, avatar: body.avatar ?? null }));
         }
       }
     }
@@ -374,6 +407,7 @@ export async function startMockDiscord(options = {}) {
     executions,
     bulkDeletes,
     deletes,
+    webhookDeletes,
     addMessage,
     addMessageAt,
     addWebhook,

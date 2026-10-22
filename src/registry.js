@@ -15,6 +15,7 @@ export const COMMANDS = [
   'progress',
   'done',
   'leave',
+  'avatar',
   'download',
   'clear',
 ];

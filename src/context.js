@@ -5,7 +5,16 @@ import { compareSnowflake, createClient } from './discord.js';
 import { DiscordError, UserError } from './errors.js';
 import { cmdText, isSystemMessage, normalize, roundLimit, validateAgentName } from './protocol.js';
 import { fmtSize, oneLine } from './render.js';
-import { clearWebhook, loadAgent, loadWebhook, missingAgentError, saveWebhook } from './state.js';
+import {
+  clearWebhook,
+  listAgentWebhooks,
+  loadAgent,
+  loadKnownWebhooks,
+  loadWebhook,
+  missingAgentError,
+  saveKnownWebhooks,
+  saveWebhook,
+} from './state.js';
 
 export function createContext({ command, values, positionals, stdin }) {
   let room;
@@ -45,14 +54,58 @@ export function requireAgent(ctx) {
   return state;
 }
 
-export function webhookIdOf(room) {
-  return loadWebhook(room.channelId)?.id ?? null;
+// 本工具的 webhook：共用的名稱等於 webhookName，專屬的是 `<webhookName>-<名稱小寫>`（§1）。
+export function isRoomWebhookName(name, room) {
+  return name === room.webhookName || (typeof name === 'string' && name.startsWith(`${room.webhookName}-`));
+}
+
+export function agentWebhookName(room, name) {
+  return `${room.webhookName}-${String(name).toLowerCase()}`;
+}
+
+// §4.5 本房 webhook 的 ID 集合：共用 webhook、本機各 agent 的專屬 webhook、辨識快取的 room；
+// 這批訊息裡有不認得的 webhook ID 時查一次頻道的 webhook 清單（同一個 ID 每個行程只查一次）。
+// 回傳 null 表示不知道（連共用 webhook 都不知道又查不到），呼叫端照舊規則把所有 webhook 訊息都算本房。
+export async function roomWebhookIds(ctx, raws) {
+  const room = ctx.room;
+  const known = loadKnownWebhooks(room.channelId);
+  const shared = loadWebhook(room.channelId)?.id ?? null;
+  const ids = new Set(known.room);
+  if (shared) ids.add(shared);
+  for (const hook of listAgentWebhooks(room.channelId)) ids.add(hook.id);
+  const other = new Set(known.other);
+  ctx.webhookLookups ??= new Set();
+  const unknown = [...new Set(raws.map((r) => r?.webhook_id).filter(Boolean))].filter(
+    (id) => !ids.has(id) && !other.has(id) && !ctx.webhookLookups.has(id),
+  );
+  if (unknown.length) {
+    for (const id of unknown) ctx.webhookLookups.add(id);
+    let list = null;
+    try {
+      list = await ctx.client.listWebhooks(room.channelId);
+    } catch {
+      // 查不到（例如沒有管理 Webhook 權限）就只用已知的。
+    }
+    if (Array.isArray(list)) {
+      const found = list.filter((w) => w?.id && isRoomWebhookName(w.name, room)).map((w) => w.id);
+      for (const id of found) ids.add(id);
+      const strangers = unknown.filter((id) => !ids.has(id));
+      try {
+        saveKnownWebhooks(room.channelId, { room: [...known.room, ...found], other: [...known.other, ...strangers] });
+      } catch {
+        // 快取寫不進去不影響這次判斷，下次再查。
+      }
+    } else if (!ids.size) {
+      return null;
+    }
+  }
+  return ids.size ? ids : null;
 }
 
 // 系統訊息（釘選、成員加入等）不是任何人的發言，不輸出也不參與判斷。
-export function normalizeAll(raws, room, self) {
-  const webhookId = webhookIdOf(room);
-  return raws.filter((raw) => !isSystemMessage(raw)).map((raw) => normalize(raw, room, self, { webhookId }));
+export async function normalizeAll(ctx, raws, self) {
+  const webhookIds = await roomWebhookIds(ctx, raws);
+  return raws.filter((raw) => !isSystemMessage(raw)).map((raw) => normalize(raw, ctx.room, self, { webhookIds }));
 }
 
 // 確保本房 webhook 可用（§6.3 doctor 第 8 項）：快取有效就用；否則找頻道裡同名且有 token 的；再沒有就建立。
@@ -99,7 +152,7 @@ export const UNREAD_PAGES = 5;
 export async function countUnread(ctx, state, excludeIds = []) {
   if (!state.cursor) return { count: 0, capped: false };
   const raws = await ctx.client.messagesAfter(ctx.room.channelId, state.cursor, UNREAD_PAGES);
-  const count = normalizeAll(raws, ctx.room, state).filter((m) => m.kind !== 'self' && !excludeIds.includes(m.id)).length;
+  const count = (await normalizeAll(ctx, raws, state)).filter((m) => m.kind !== 'self' && !excludeIds.includes(m.id)).length;
   return { count, capped: raws.length >= UNREAD_PAGES * 100 };
 }
 
