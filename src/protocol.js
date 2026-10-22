@@ -81,7 +81,8 @@ export function validateAgentName(name) {
   if (lower.includes('discord') || lower.includes('clyde')) {
     return 'Discord 不允許名稱含有 discord 或 clyde';
   }
-  if (RESERVED_NAMES.includes(lower)) {
+  // @moderator 只看開頭就換成主導者 mention，所以 moderator2 這類名稱也永遠 @ 不到。
+  if (RESERVED_NAMES.includes(lower) || lower.startsWith('moderator')) {
     return `${name} 是保留字（${RESERVED_NAMES.join('、')}），請換一個名稱，例如 claude-1`;
   }
   return null;
@@ -530,8 +531,8 @@ export function applyDirectives(state, messages, room) {
   const notes = [];
   for (const m of messages) {
     if (m.kind === 'self') continue;
-    // §5.4：別的 agent 進出房與 [IDLE] 不算有人回應，不重設無人回應的計時。
-    const presence = (m.kind === 'agent' || m.kind === 'bot') && PRESENCE_TAGS.has(m.tag);
+    // §5.4：[JOIN]／[LEAVE]／[IDLE] 不論誰發的都不算有人回應，不重設無人回應的計時。
+    const presence = PRESENCE_TAGS.has(m.tag);
     if (!presence) state.emptyWaitSince = null;
     if (m.kind !== 'moderator') continue;
 

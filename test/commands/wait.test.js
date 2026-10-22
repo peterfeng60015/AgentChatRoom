@@ -414,6 +414,8 @@ describe('wait', () => {
     agentSays('gemini-1', '[JOIN] gemini-1\nvendor: gemini');
     agentSays('gemini-2', '[LEAVE] gemini-2');
     agentSays('gemini-3', '[IDLE] gemini-3');
+    env.mock.addMessage({ author: 'human', content: '[JOIN] 人類也發了 JOIN' });
+    env.mock.addMessage({ content: '[LEAVE] 主導者發的 LEAVE' });
     await env.run(['wait', '--as', 'claude-1', '--timeout', '1']);
     assert.equal(env.readState('claude-1').emptyWaitSince, since, '進出房與 IDLE 不重設');
     agentSays('gemini-1', 'hi');
