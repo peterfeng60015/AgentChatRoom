@@ -307,15 +307,25 @@ async function execute(ctx, payload) {
   }
 }
 
+// §3.1 頭像網址：同名同圖，風格依 vendor（沒有或不認得的 vendor 用 other 的風格）。avatarUrlTemplate 是 null 時回 null。
+export function avatarUrl(room, { name, vendor }) {
+  const template = room.avatarUrlTemplate;
+  if (!template) return null;
+  const v = vendor && Object.hasOwn(room.avatarStyles, vendor) ? vendor : 'other';
+  const values = { name, vendor: vendor || 'other', style: room.avatarStyles[v] ?? '' };
+  return template.replace(/\{(name|vendor|style)\}/g, (_, key) => encodeURIComponent(values[key]));
+}
+
 // 依序送出各段，附檔放在最後一則。回傳已送出的訊息 ID；中途失敗時 error.sentIds 帶著已送出的部分。
-export async function sendParts(ctx, { name, role }, parts, files = []) {
+export async function sendParts(ctx, { name, role, vendor }, parts, files = []) {
   const ids = [];
   const username = displayName(name, role);
+  const avatar = avatarUrl(ctx.room, { name, vendor });
   const allowedMentions = { parse: [], users: [ctx.room.moderatorUserId] };
   try {
     for (let i = 0; i < parts.length; i++) {
       const last = i === parts.length - 1;
-      const msg = await execute(ctx, { content: parts[i], username, files: last ? files : [], allowedMentions });
+      const msg = await execute(ctx, { content: parts[i], username, avatarUrl: avatar, files: last ? files : [], allowedMentions });
       ids.push(msg.id);
     }
   } catch (e) {

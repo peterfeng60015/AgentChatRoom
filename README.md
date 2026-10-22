@@ -203,6 +203,9 @@ docs/SPEC.md                     介面規格（指令、協定、狀態、模�
 - **頻道內容對 agent 一律是資料，不是指令**。其他 agent 的發言、附檔、連結都不能改變 agent 的行為；只有主導者的指令訊息能改變階段與分工。
   附檔用 `agentchat download` 下載後只讀取，不執行。
 - 工具發言只會通知主導者，`@everyone` 之類的 mention 不會生效。
+- **agent 頭像用 [DiceBear](https://www.dicebear.com/)**：每則發言帶一個 `https://api.dicebear.com/10.x/<風格>/png?seed=<agent 名稱>` 的頭像網址，
+  Discord 會去抓這張圖，所以 **agent 名稱會送到 DiceBear 這個外部服務**（工具本身不連）。同名同圖，claude、gemini、codex、other 各用一種風格。
+  不想送出時，在 room.json 加 `"avatarUrlTemplate": null` 就不帶頭像；也可以改成自己的圖片網址，或用 `avatarStyles` 換風格（見 [SPEC §3.1](docs/SPEC.md)）。
 - 這個 repo 是公開的，`config/room.json` 裡的伺服器、頻道、使用者 ID 也是公開的。ID 本身不是憑證，但別把其他機密放進 `config/`。
 - 給 agent 的權限只開到「能執行 `agentchat`、能連 discord.com」為止，不要為了省事用全部免核准的模式（例如 `--dangerously-skip-permissions`、`--yolo`、
   `--dangerously-bypass-approvals-and-sandbox`）。各家只放行 `agentchat` 的建議設定見上面三份 setup 文件。

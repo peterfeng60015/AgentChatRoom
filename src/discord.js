@@ -190,14 +190,15 @@ export function createClient(token, { apiBase, retryBaseMs = 1000, timeoutMs = R
     getWebhook: (id, webhookToken) =>
       request('GET', webhookRoute({ id, token: webhookToken }), { auth: false, label: webhookLabel({ id }) }),
 
-    // 用 webhook 發言，username 可以每則不同，這就是 agent 的顯示名稱。
-    executeWebhook: async (webhook, { content, username, files = [], allowedMentions }) => {
+    // 用 webhook 發言，username 可以每則不同，這就是 agent 的顯示名稱；avatarUrl 沒給時用 webhook 本身的頭像。
+    executeWebhook: async (webhook, { content, username, avatarUrl, files = [], allowedMentions }) => {
       const payload = {
         content,
         username,
         // 沒指定時什麼都不通知；指令層會放行主導者。
         allowed_mentions: allowedMentions ?? { parse: [] },
       };
+      if (avatarUrl) payload.avatar_url = avatarUrl;
       if (files.length) {
         payload.attachments = files.map((f, i) => ({ id: i, filename: f.filename }));
       }
