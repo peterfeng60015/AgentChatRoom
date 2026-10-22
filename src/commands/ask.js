@@ -1,4 +1,4 @@
-import { waitText } from '../protocol.js';
+import { waitAdvice, waitText } from '../protocol.js';
 import { requireAgent } from '../context.js';
 import { BODY_OPTIONS, BODY_SOURCE_HELP, publish, publishResult, readBody } from '../publish.js';
 
@@ -34,7 +34,8 @@ export async function run(ctx) {
     },
   });
   return publishResult(result, room, {
-    lines: [`接著用 ${waitText(result.state.name, room, 'mention')} 等主導者回答`],
+    // §6.3：照目前階段的等法 wait（§5.2 下方的表），主導者的回答一定收得到。
+    lines: [`接著照目前階段用 ${waitAdvice(result.state, room) ?? waitText(result.state.name, room, 'moderator')} 等主導者回答`],
     data: { pendingQuestionId: result.ids[0] },
   });
 }

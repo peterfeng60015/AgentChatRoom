@@ -22,7 +22,8 @@ describe('wait', () => {
     const t0 = Date.now();
     const r = await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
     assert.equal(r.code, 0, r.stderr);
-    assert.ok(Date.now() - t0 < 1500);
+    // 只查一次的重點是請求次數（下面驗證）；時間只防「卡住等到逾時」，上限放寬避免機器忙時誤判。
+    assert.ok(Date.now() - t0 < 5000);
     const lines = r.stdout.split('\n');
     assert.equal(lines[0], '狀態：逾時，沒有新訊息');
     assert.equal(lines[1], '階段：lobby　角色：未指派　討論：0/3');

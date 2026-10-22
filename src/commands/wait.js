@@ -2,7 +2,7 @@ import { toInt } from '../args.js';
 import { compareSnowflake, snowflakeNow } from '../discord.js';
 import { ProtocolError, UserError } from '../errors.js';
 import { LEFT_TEXT, applyEach, buildMessage, cmdText, reminders } from '../protocol.js';
-import { kindLabel, renderMessages, section } from '../render.js';
+import { kindLabel, oneLine, renderMessages, section } from '../render.js';
 import { acquireWaitLock, appendLog, loadAgent, recordOwnMessages, updateAgent } from '../state.js';
 import { normalizeAll, phaseOf, publicMessage, requireAgent, roundInfo, summaryLine } from '../context.js';
 import { sendParts } from '../publish.js';
@@ -23,7 +23,7 @@ const UNTIL = ['any', 'mention', 'moderator'];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function whoOf(m) {
-  return m.kind === 'moderator' ? '主導者' : `${kindLabel(m.kind)} ${m.author}`;
+  return m.kind === 'moderator' ? '主導者' : `${kindLabel(m.kind)} ${oneLine(m.author)}`;
 }
 
 function matchReason(m, until) {
@@ -119,13 +119,21 @@ async function waitLocked(ctx, room, initial, timeout, until) {
         {},
         `連續 ${room.idleLimitMin} 分鐘沒有任何新訊息，自動結束等待。`,
       );
-      const ids = await sendParts(ctx, updated, [content]);
-      updated = updateAgent(room.channelId, state.name, (s) => {
-        recordOwnMessages(s, ids);
-        s.phase = 'idle';
-      });
-      appendLog(room.channelId, { dir: 'out', agent: state.name, tag: 'IDLE', ids, content });
-      status = 'idle';
+      let ids = null;
+      try {
+        ids = await sendParts(ctx, updated, [content]);
+      } catch (e) {
+        // §5.4：送不出去不丟錯，這批訊息照常輸出、狀態維持逾時、階段不改，下次 wait 會再試。
+        notes.push(`自動 [IDLE] 送出失敗（${e.message}），下次 wait 會再試；可用 ${cmdText(updated.name, 'read', '--last 5', room)} 確認是否已送出`);
+      }
+      if (ids) {
+        updated = updateAgent(room.channelId, state.name, (s) => {
+          recordOwnMessages(s, ids);
+          s.phase = 'idle';
+        });
+        appendLog(room.channelId, { dir: 'out', agent: state.name, tag: 'IDLE', ids, content });
+        status = 'idle';
+      }
     }
   }
 
@@ -143,7 +151,7 @@ async function waitLocked(ctx, room, initial, timeout, until) {
   if (n) text.push(n);
   const r = section('提醒', rem);
   if (r) text.push(r);
-  if (batch.length) text.push('', renderMessages(batch, { as: updated.name }));
+  if (batch.length) text.push('', renderMessages(batch, { as: updated.name, room }));
   return {
     text,
     data: {

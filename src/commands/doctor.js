@@ -1,5 +1,6 @@
-import { findToken, loadRoom } from '../config.js';
-import { createClient } from '../discord.js';
+import fs from 'node:fs';
+import { ENV_FILE, findToken, loadRoom } from '../config.js';
+import { DEFAULT_API_BASE, createClient } from '../discord.js';
 import { DiscordError } from '../errors.js';
 import { validateAgentName } from '../protocol.js';
 import { loadAgent } from '../state.js';
@@ -180,6 +181,28 @@ export async function run(ctx) {
       if (!state) add('WARN', 'agent 狀態', `${ctx.values.as} 還沒在這個房間 join`);
       else add('OK', 'agent 狀態', `${ctx.values.as}：${summaryLine(state, room)}，游標 ${state.cursor}`);
     }
+  }
+
+  // 11. 設定提醒（§9）：API 位址被改過、.env 權限太寬。
+  const apiBase = process.env.AGENTCHAT_API_BASE;
+  if (apiBase && apiBase.replace(/\/+$/, '') !== DEFAULT_API_BASE) {
+    let note = '';
+    try {
+      const u = new URL(apiBase);
+      const local = ['localhost', '127.0.0.1', '[::1]', '::1'].includes(u.hostname);
+      if (u.protocol !== 'https:' && !local) note = '（不是 https，也不是本機位址：bot token 會以明文送出）';
+    } catch {
+      note = '（不是合法網址）';
+    }
+    add('WARN', 'API 位址', `AGENTCHAT_API_BASE 不是預設值：${apiBase}${note}`);
+  }
+  try {
+    const mode = fs.statSync(ENV_FILE).mode;
+    if ((mode & 0o077) !== 0) {
+      add('WARN', '.env 權限', `${ENV_FILE} 對群組或其他人開放（${(mode & 0o777).toString(8)}），請執行 chmod 600 ${ENV_FILE}`);
+    }
+  } catch {
+    // 沒有 .env。
   }
 
   const count = (level) => checks.filter((c) => c.level === level).length;

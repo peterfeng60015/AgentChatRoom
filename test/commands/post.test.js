@@ -317,7 +317,7 @@ describe('discuss、ack、ask、progress、done 的階段與欄位', () => {
     assert.deepEqual(ex.payload.allowed_mentions.users, [mod]);
     assert.deepEqual(env.mock.lastMessage().mentions, [{ id: mod }], '假 Discord 依 allowed_mentions 算出會通知主導者');
     assert.equal(env.readState('claude-1').pendingQuestionId, ex.id);
-    assert.match(r.stdout, /接著用 agentchat wait --as claude-1 --until mention --timeout 2 等主導者回答/);
+    assert.match(r.stdout, /接著照目前階段用 agentchat wait --as claude-1 --until moderator --timeout 2 等主導者回答/);
   });
 
   test('ask：內文自帶 [QUESTION] 標籤列時補上主導者 mention；closed 階段不能問', async () => {

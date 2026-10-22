@@ -4,7 +4,7 @@ import { getToken, loadRoom } from './config.js';
 import { compareSnowflake, createClient } from './discord.js';
 import { DiscordError, UserError } from './errors.js';
 import { cmdText, isSystemMessage, normalize, roundLimit, validateAgentName } from './protocol.js';
-import { fmtSize } from './render.js';
+import { fmtSize, oneLine } from './render.js';
 import { clearWebhook, loadAgent, loadWebhook, saveWebhook } from './state.js';
 
 export function createContext({ command, values, positionals, stdin }) {
@@ -143,7 +143,7 @@ export function stateLines(state, room) {
     const files = state.topic.attachments || [];
     if (files.length) {
       lines.push(
-        `議題附檔：${files.map((a) => `${a.filename}（${fmtSize(a.size)}）`).join('、')}→ agentchat download --as ${state.name} ${state.topic.id}`,
+        `議題附檔：${files.map((a) => `${oneLine(a.filename)}（${fmtSize(a.size)}）`).join('、')}→ ${cmdText(state.name, 'download', state.topic.id, room)}`,
       );
     }
   } else {

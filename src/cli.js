@@ -2,6 +2,7 @@ import { parse } from './args.js';
 import { exitCodeOf, UserError, ProtocolError, DiscordError } from './errors.js';
 import { isCommand, loadCommand, renderUsage } from './registry.js';
 import { createContext } from './context.js';
+import { cleanText } from './render.js';
 
 // 指令名稱前面允許的全域旗標（不帶值的才能放在前面，帶值的 --as 等會和指令名稱混淆）。
 const LEADING_FLAGS = new Set(['--json', '-h', '--help']);
@@ -15,9 +16,12 @@ function wantsJson(argv) {
   return false;
 }
 
+// §9：所有輸出的最後一道清理。工具自己的文字只會有換行與 tab，來自頻道的字串可能夾帶控制字元或
+// 雙向文字控制字元，一律換成 U+FFFD；單獨的 \r 也換掉（會把終端機的游標拉回行首覆蓋前文）。
 function write(stream, text) {
   if (text === undefined || text === null || text === '') return;
-  stream.write(text.endsWith('\n') ? text : text + '\n');
+  const safe = cleanText(text).replace(/\r/g, '\ufffd');
+  stream.write(safe.endsWith('\n') ? safe : safe + '\n');
 }
 
 function toText(text) {

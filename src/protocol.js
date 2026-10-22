@@ -43,6 +43,25 @@ export function waitText(name, room, until) {
   return cmdText(name, 'wait', `${until ? `--until ${until} ` : ''}--timeout ${waitTimeoutOf(room)}`, room);
 }
 
+// §5.2 下方的表：各階段建議的 wait 等法。closed／idle／left 不再 wait，回 null。
+// 有待答問題不改變等法：主導者的回答不論哪種 --until 都收得到。
+export function waitAdvice(state, room) {
+  const phase = state.left ? 'left' : state.phase;
+  switch (phase) {
+    case 'lobby':
+    case 'topic':
+    case 'stopped':
+      return waitText(state.name, room, 'moderator');
+    case 'discussion':
+      return waitText(state.name, room, (state.discussRound ?? 0) >= roundLimit(state, room) ? 'moderator' : null);
+    case 'work':
+    case 'done':
+      return waitText(state.name, room, 'mention');
+    default:
+      return null;
+  }
+}
+
 // 各階段允許的發言指令（§5.2）。wait、status、read 這類只讀指令不在這裡管。
 export const PHASE_COMMANDS = {
   lobby: ['post', 'ask', 'leave'],
@@ -84,7 +103,10 @@ export function validateAgentName(name) {
     return 'Discord 不允許名稱含有 discord 或 clyde';
   }
   // @moderator 只看開頭就換成主導者 mention，所以 moderator2 這類名稱也永遠 @ 不到。
-  if (RESERVED_NAMES.includes(lower) || lower.startsWith('moderator')) {
+  if (lower.startsWith('moderator')) {
+    return `名稱不能以 moderator 開頭（@moderator 會被換成通知主導者）：${name}，請換一個名稱，例如 claude-1`;
+  }
+  if (RESERVED_NAMES.includes(lower)) {
     return `${name} 是保留字（${RESERVED_NAMES.join('、')}），請換一個名稱，例如 claude-1`;
   }
   return null;
@@ -672,7 +694,7 @@ export function reminders(state, room, now = Date.now()) {
       list.push(`目前沒有進行中的議題：用 ${waitText(state.name, room, 'moderator')} 等主導者發 [TOPIC]。`);
       break;
     case 'topic':
-      list.push(`有議題但你還沒被指派：用 ${waitText(state.name, room, 'mention')} 等 [ASSIGN]。`);
+      list.push(`有議題但你還沒被指派：用 ${waitText(state.name, room, 'moderator')} 等 [ASSIGN]。`);
       break;
     case 'discussion': {
       const limit = roundLimit(state, room);
@@ -694,7 +716,7 @@ export function reminders(state, room, now = Date.now()) {
       break;
     }
     case 'done':
-      list.push(`你已發出 [DONE]：用 ${waitText(state.name, room, 'moderator')} 等主導者的下一步。`);
+      list.push(`你已發出 [DONE]：用 ${waitText(state.name, room, 'mention')} 等主導者的下一步，也回答別人對成果的問題。`);
       break;
     case 'stopped':
       list.push(`目前是 [STOP] 狀態：停下手上的動作，只用 ${waitText(state.name, room, 'moderator')} 等指示。`);
@@ -712,7 +734,8 @@ export function reminders(state, room, now = Date.now()) {
       break;
   }
   if (state.pendingQuestionId && !['closed', 'idle', 'left'].includes(state.phase)) {
-    list.push(`你的 [QUESTION]（id=${state.pendingQuestionId}）還沒得到回答：用 ${waitText(state.name, room, 'mention')} 等主導者。`);
+    const advice = waitAdvice(state, room);
+    list.push(`你的 [QUESTION]（id=${state.pendingQuestionId}）還沒得到回答${advice ? `：照常用 ${advice}，主導者的回答一定收得到` : ''}。`);
   }
   return list;
 }

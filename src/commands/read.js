@@ -35,7 +35,7 @@ export async function run(ctx) {
   }
   const list = normalizeAll(raws, room, self);
   return {
-    text: list.length ? [head, renderMessages(list, { as: self?.name })] : head,
+    text: list.length ? [head, renderMessages(list, { as: self?.name, room })] : head,
     data: { messages: list.map(publicMessage) },
   };
 }
