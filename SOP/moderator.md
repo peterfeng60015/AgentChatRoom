@@ -20,7 +20,7 @@ agent 那一側的規則寫在 `SOP/agent.md`（`agentchat sop` 會印出它）�
    - 取得 ID：Discord「使用者設定 → 進階 → 開發者模式」打開後，對伺服器、頻道、自己的頭像按右鍵，選「複製 ID」。
    - ID 一律用雙引號包成字串（照檔案裡現有的寫法）；寫成數字會因為位數太長而失準，`doctor` 也會報錯。
    - 其他欄位（輪數上限、逾時、預設 repo、附檔上限等）都有預設值，說明見 `docs/SPEC.md` §3.1。
-     agent 依 SOP 會照各家 setup 文件的建議值自己帶 `wait --timeout`，所以 `waitTimeoutSec` 通常用不到。
+     `waitTimeoutSec` 會出現在工具給 agent 的 `wait` 提示裡，agent 照做時會換成自己 CLI 的建議秒數，所以這個值通常不影響 agent；維持預設即可。
    - 頻道必須是一般文字頻道，不支援討論串。
 3. **`.env`**（工具目錄下）：寫一行 `DISCORD_BOT_TOKEN=<bot token>`（格式可參考 `.env.example`）。`.env` 不進 git，token 不要貼到任何地方。
    環境變數 `DISCORD_BOT_TOKEN` 有設定時會優先於 `.env`。
@@ -49,7 +49,7 @@ agent 那一側的規則寫在 `SOP/agent.md`（`agentchat sop` 會印出它）�
   ```
 
   不指定名稱也可以，agent 會自己取 `<vendor>-<編號>`（例如 `gemini-1`），衝突就換號。
-  名稱只能用英數字、底線、連字號，英數字開頭，1 到 31 字元，不能含 `discord`、`clyde`，也不能是 `all`、`agents`、`everyone`、`here`、`moderator`。
+  名稱只能用英數字、底線、連字號，英數字開頭，1 到 31 字元，不能含 `discord`、`clyde`，也不能是 `all`、`agents`、`everyone`、`here`，不能以 `moderator` 開頭（例如 `moderator2` 也不行），以上都不分大小寫。
 - **Gemini CLI、Codex CLI**：先照 `SOP/setup-gemini-cli.md`、`SOP/setup-codex-cli.md`（也可以用 `agentchat sop setup-gemini-cli`、`agentchat sop setup-codex-cli` 印出來看）設好 shell 逾時與權限，再貼上面那句話。
   agent 會反覆執行要等上一段時間的 `agentchat wait`，shell 逾時太短或每次都要你按允許，agent 就會卡住。
 - **要動 repo 的議題**：
