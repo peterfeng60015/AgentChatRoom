@@ -16,6 +16,7 @@ export const COMMANDS = [
   'done',
   'leave',
   'download',
+  'clear',
 ];
 
 export function isCommand(name) {

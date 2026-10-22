@@ -4,6 +4,8 @@ import http from 'node:http';
 
 const EPOCH = 1420070400000n;
 
+const BOT_ROLE_ID = '600000000000000006';
+
 export const DEFAULTS = {
   token: 'test-bot-token',
   guildId: '100000000000000001',
@@ -34,6 +36,8 @@ export async function startMockDiscord(options = {}) {
     channelType: 0,
     channelGuildId: null, // 不是 null 時，GET /channels/:id 回這個 guild_id（測試不一致的情況）
     webhookPermission: true, // false 時 webhook 清單與建立回 403
+    manageMessages: true, // false 時 bot 的角色沒有「管理訊息」，bulk-delete 與 DELETE 訊息回 403
+    permissionOverwrites: [], // GET /channels/:id 的 permission_overwrites
     ...options,
   };
   const messages = []; // 由舊到新
@@ -42,6 +46,8 @@ export async function startMockDiscord(options = {}) {
   const requests = []; // 每個請求的紀錄
   const executions = []; // 每次 webhook 發言收到的 payload
   const faults = []; // 模擬錯誤
+  const bulkDeletes = []; // 每次 bulk-delete 成功刪掉的 ID
+  const deletes = []; // 逐則刪掉的 ID
   let lastId = 0n;
   let base = '';
 
@@ -111,6 +117,15 @@ export async function startMockDiscord(options = {}) {
       if (referenceType !== undefined) msg.message_reference.type = referenceType;
     }
     messages.push(msg);
+    return msg;
+  }
+
+  // 放一則指定時間的訊息（測 14 天邊界）：ID 依時間產生，頻道仍維持由舊到新排序。
+  function addMessageAt(date, opts = {}) {
+    const msg = addMessage(opts);
+    msg.id = ((BigInt(new Date(date).getTime()) - EPOCH) << 22n).toString();
+    msg.timestamp = new Date(date).toISOString();
+    messages.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
     return msg;
   }
 
@@ -264,6 +279,19 @@ export async function startMockDiscord(options = {}) {
       if (user[1] !== cfg.moderatorId) return json(res, 404, { message: 'Unknown User', code: 10013 });
       return json(res, 200, { id: cfg.moderatorId, username: 'peter', global_name: 'Peter' });
     }
+    // bot 的角色：@everyone（ID 同伺服器）只有檢視與讀取歷史；bot 角色依 manageMessages 決定有沒有「管理訊息」。
+    const guild = path.match(/^\/guilds\/(\d+)\/(members\/(\d+)|roles)$/);
+    if (req.method === 'GET' && guild) {
+      if (guild[1] !== cfg.guildId) return json(res, 404, { message: 'Unknown Guild', code: 10004 });
+      if (guild[2] === 'roles') {
+        return json(res, 200, [
+          { id: cfg.guildId, name: '@everyone', permissions: String((1 << 10) | (1 << 16)) },
+          { id: BOT_ROLE_ID, name: 'agentchat', permissions: String((1 << 29) | (cfg.manageMessages ? 1 << 13 : 0)) },
+        ]);
+      }
+      if (guild[3] !== cfg.botId) return json(res, 404, { message: 'Unknown Member', code: 10007 });
+      return json(res, 200, { user: { id: cfg.botId }, roles: [BOT_ROLE_ID] });
+    }
     if (req.method === 'GET' && path === '/applications/@me') {
       return json(res, 200, { id: cfg.botId, name: 'agentchat', flags: cfg.appFlags });
     }
@@ -277,6 +305,7 @@ export async function startMockDiscord(options = {}) {
           type: cfg.channelType,
           guild_id: cfg.channelGuildId ?? cfg.guildId,
           name: 'agent-room',
+          permission_overwrites: cfg.permissionOverwrites,
           last_message_id: messages.length ? messages[messages.length - 1].id : null,
         });
       }
@@ -288,6 +317,34 @@ export async function startMockDiscord(options = {}) {
       if (req.method === 'GET' && one) {
         const msg = messages.find((m) => m.id === one[1]);
         return msg ? json(res, 200, msg) : json(res, 404, { message: 'Unknown Message', code: 10008 });
+      }
+      // 刪除訊息：真的 Discord 的 bulk-delete 只收 2–100 則、都要在 14 天內。
+      if (req.method === 'POST' && rest === '/messages/bulk-delete') {
+        if (!cfg.manageMessages) return json(res, 403, { message: 'Missing Permissions', code: 50013 });
+        const ids = JSON.parse(raw.toString('utf8') || '{}').messages || [];
+        if (ids.length < 2 || ids.length > 100) {
+          return json(res, 400, { message: 'Invalid Form Body: messages must be between 2 and 100 in length.', code: 50035 });
+        }
+        const limit = (BigInt(Date.now() - 14 * 24 * 60 * 60 * 1000) - EPOCH) << 22n;
+        if (ids.some((id) => BigInt(id) < limit)) {
+          return json(res, 400, { message: 'You can only bulk delete messages that are under 14 days old.', code: 50034 });
+        }
+        for (const id of ids) {
+          const i = messages.findIndex((m) => m.id === id);
+          if (i >= 0) messages.splice(i, 1);
+        }
+        bulkDeletes.push([...ids]);
+        res.writeHead(204);
+        return res.end();
+      }
+      if (req.method === 'DELETE' && one) {
+        if (!cfg.manageMessages) return json(res, 403, { message: 'Missing Permissions', code: 50013 });
+        const i = messages.findIndex((m) => m.id === one[1]);
+        if (i < 0) return json(res, 404, { message: 'Unknown Message', code: 10008 });
+        messages.splice(i, 1);
+        deletes.push(one[1]);
+        res.writeHead(204);
+        return res.end();
       }
       if (rest === '/webhooks') {
         if (!cfg.webhookPermission) return json(res, 403, { message: 'Missing Permissions', code: 50013 });
@@ -315,7 +372,10 @@ export async function startMockDiscord(options = {}) {
     webhooks,
     requests,
     executions,
+    bulkDeletes,
+    deletes,
     addMessage,
+    addMessageAt,
     addWebhook,
     fail,
     delay,

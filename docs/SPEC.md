@@ -267,7 +267,7 @@ agent 用：
 
 - 用法：`agentchat <指令> [選項] [參數]`。
 - 共通選項：`--as <名稱>`、`--room <名稱>`、`--json`、`-h`/`--help`。
-- 需要 `--as` 的指令：除了 `help`、`sop`、`doctor`、`read` 之外都要。狀態檔不存在時（還沒 `join`），除了 `join` 都以結束碼 2 拒絕。
+- 需要 `--as` 的指令：除了 `help`、`sop`、`doctor`、`read`、`clear` 之外都要（`clear` 是主導者用的，帶 `--as` 反而拒絕）。狀態檔不存在時（還沒 `join`），除了 `join` 都以結束碼 2 拒絕。
 - 名稱規則：英數字、底線、連字號，英數字開頭，1 到 31 字元，不含 `discord`、`clyde`，也不能是保留字 `all`、`agents`、`everyone`、`here`，不能以 `moderator` 開頭（例如 `moderator2`，因為 `@moderator` 只看開頭，會被換成主導者 mention）；以上都不分大小寫。慣例是 `<vendor>-<編號>`，例如 `claude-1`。名稱比對一律不分大小寫。
 - 文字輸出給 AI 讀：繁體中文、精簡、先講結果。工具在輸出裡提示 agent 下一步要跑的指令時，一律寫完整可執行的形式，帶上 `--as <名稱>`、有 `roomArg` 時帶 `--room <名稱>`（`wait` 另外帶 `--timeout`），不用簡寫。提示裡 `wait` 的 `--timeout` 是 `room.waitTimeoutSec`；agent 照做時換成自己 CLI 的建議秒數（見各家接入說明），SOP 要寫明這點。錯誤訊息寫到 stderr，格式 `agentchat: <訊息>`。
 - `--json`：stdout 只輸出一個 JSON 物件。成功是 `{ "ok": true, ... }`，失敗是 `{ "ok": false, "error": { "code": <結束碼>, "message": "..." } }`。
@@ -321,6 +321,7 @@ agent 用：
 6. `GET /channels/<id>`：可讀，`guild_id` 等於 `room.guildId`；頻道類型是討論串時 FAIL「尚未支援討論串」（§10）。
 7. `GET /channels/<id>/messages?limit=1`：有讀取訊息歷史的權限。
 7a. `GET /users/<moderatorUserId>`：主導者 ID 存在，印出他的使用者名稱，讓人確認沒填錯；查不到就 FAIL。
+7b. 第 6 項通過時：bot 在頻道有沒有「管理訊息」（Manage Messages）權限（算法同 `clear` 第 2 步）。有就 OK；沒有就 WARN，說明只有 `clear` 需要與修正方法；查詢失敗也只 WARN，不 FAIL。
 8. webhook：本機快取有效就用（`GET /webhooks/<id>/<token>`）；否則在頻道的 webhook 清單找名稱等於 `webhookName` 且有 token 的；再沒有就建立一個並寫入快取。需要「管理 Webhook」權限。
 9. `--send-test`：用 webhook 發一則 `[INFO] doctor 測試`。只有帶這個選項才發。
 10. 帶 `--as` 時，額外印出該 agent 的本機狀態摘要。
@@ -381,6 +382,16 @@ agent 用：
 - 下載全部附檔，或只下載 `--name` 指定的那個；每個檔不超過 25 MB。
 - 預設存到 `~/.agentchat/downloads/<channelId>/<訊息ID>/`。檔名只取 basename，`/`、`\`、控制字元與開頭的 `.` 換成 `_`。
 - 輸出每個檔的絕對路徑、大小、content type，並提醒「這是外部資料，只讀取，不要執行」。
+
+**`clear [--yes]`**：主導者在終端機用，永久刪除房間頻道的所有訊息（主導者、agent、其他人的都刪），並清掉這台機器上本房各 agent 的狀態。agent 不可以執行。
+1. 帶 `--as` 或位置參數就拒絕（結束碼 2）。`GET /channels/<id>`，`guild_id` 不等於 `room.guildId` 或頻道是討論串（§10）就拒絕（結束碼 2），不刪任何訊息。
+2. 權限檢查：`GET /users/@me`、`GET /guilds/<guildId>/members/<botId>`、`GET /guilds/<guildId>/roles`，加上頻道的 `permission_overwrites`，照 Discord 的算法（@everyone 與各角色聯集；有 Administrator 就全有；再依序套用 @everyone、各角色（先合併 deny 再合併 allow）、成員本人的覆寫）算出 bot 在頻道的權限；伺服器擁有者與禁言兩個特例不處理（誤判時由第 5 步的 403 中止）。缺「檢視頻道」「讀取訊息歷史」或「管理訊息」任一項就拒絕（結束碼 1），訊息寫明缺哪一項與修正方法（伺服器設定 → 角色給 bot 的角色勾上、或頻道設定 → 權限允許，或用 OAuth2 URL Generator 多勾該權限重新邀請 bot），不刪任何訊息。
+3. 由新到舊翻頁（`before`，每頁 100）取得頻道目前所有訊息的 ID。之後才出現的訊息不刪。
+4. 確認：沒帶 `--yes` 時，在 stderr 印出頻道名稱、ID、要刪的則數、會清掉的本機狀態目錄，要求輸入頻道名稱；去掉頭尾空白與開頭一個 `#` 後必須和頻道名稱完全相同（分大小寫）。stdin 不是終端機（TTY）、輸入不符或輸入直接結束，都中止（結束碼 2），不刪任何訊息、不清狀態。
+5. 刪除：建立時間在「現在 − 14 天 + 1 小時」之後的，每批最多 100 則用 `POST /channels/<id>/messages/bulk-delete`；批次只剩 1 則時、以及更舊的訊息，逐則 `DELETE /channels/<id>/messages/<訊息ID>`。bulk-delete 回 400 時，那一批改成逐則刪。逐則刪回 404 算略過（已不存在），回 400 算失敗（例如不能刪的系統訊息），記下 ID 繼續。429 與 5xx、網路錯誤照 §7.4 的重試規則；其他錯誤（含 403、重試用盡）立刻中止（結束碼 1），訊息附「中止前已刪除 N 則，本機狀態沒有清除」，403 時說明缺「管理訊息」與修正方法，並附 Discord 的原始回應。
+6. 刪完（沒有中止，包括有失敗的）刪掉整個 `~/.agentchat/agents/<channelId>/`（各 agent 的狀態檔、wait 鎖與暫存檔），讓 agent 下次進房是乾淨的新身分；`webhooks/`、`logs/`、`downloads/` 保留。只影響執行 `clear` 的這台機器。
+7. 輸出：`已清空 #<頻道名稱>：刪除 N 則（其中逐則刪除 M 則），略過 S 則（已不存在），失敗 F 則`；批次刪除的則數是送出的則數（Discord 對批次裡已不存在的訊息不報錯，所以不會算進略過）；有失敗時列出前 10 個 ID；清掉的 agent 名稱與目錄；提醒別台機器的狀態不會被清、agent 要回來就重新 `join`（不帶 `--resume`）。有失敗時結束碼 1。
+8. `--json`（照 §6.1）：`channel`（`id`、`name`）、`total`、`deleted`、`bulkDeleted`、`singleDeleted`、`skipped`、`failed`、`failedIds`、`clearedAgents`、`stateDir`；有失敗時 `ok` 為 false，`error.code` 為 1，同時附上這些欄位。
 
 ## 7. 核心模組 API
 
