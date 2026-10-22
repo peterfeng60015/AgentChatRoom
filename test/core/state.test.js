@@ -53,7 +53,7 @@ const STATE_FIELDS = [
   'version', 'name', 'vendor', 'model', 'channelId',
   'role', 'task', 'branch', 'isolation', 'files', 'assigned', 'assignMessageId', 'assignBody', 'phaseBeforeStop',
   'topic', 'phase', 'cursor', 'discussRound', 'discussLimit', 'ownMessageIds', 'pendingQuestionId',
-  'joinedAt', 'lastActivityAt', 'lastProgressAt', 'workStartedAt', 'emptyWaitSince', 'left',
+  'joinedAt', 'lastActivityAt', 'lastProgressAt', 'workStartedAt', 'emptyWaitSince', 'left', 'lastNotes', 'lastNotesAt',
 ];
 const TIME_FIELDS = ['joinedAt', 'lastActivityAt', 'lastProgressAt', 'workStartedAt', 'emptyWaitSince'];
 
@@ -101,6 +101,8 @@ test('newAgent：初始值（沒有分工、未指派、沒有議題、lobby、�
     assert.equal(s[key], null, key);
   }
   assert.equal(s.assigned, false);
+  assert.deepEqual(s.lastNotes, []);
+  assert.equal(s.lastNotesAt, null);
   assert.equal(s.phase, 'lobby');
   assert.equal(s.discussRound, 0);
   assert.deepEqual(s.ownMessageIds, []);

@@ -54,6 +54,7 @@ const ROOM = {
   idleLimitMin: 60,
   progressReminderMin: 15,
   maxFileMB: 10,
+  maxUploadMB: 10,
   longTextChars: 6000,
 };
 
@@ -125,6 +126,8 @@ function makeState(over = {}) {
     workStartedAt: null,
     emptyWaitSince: null,
     left: false,
+    lastNotes: [],
+    lastNotesAt: null,
     ...over,
   };
 }
@@ -176,10 +179,12 @@ describe('標籤與欄位清單（§4.2、§4.3）', () => {
 // ---- §6.1 名稱規則 ----
 
 describe('validateAgentName / NAME_RE（§6.1 名稱規則）', () => {
-  const valid = ['claude-1', 'gemini_2', 'a', '1abc', 'A-b_C', 'x'.repeat(31)];
+  // 保留字只擋整個名稱剛好是保留字（不分大小寫）；含保留字的較長名稱照常合法。
+  const valid = ['claude-1', 'gemini_2', 'a', '1abc', 'A-b_C', 'x'.repeat(31), 'all-1', 'hereby', 'everyones'];
   const invalid = [
     '', 'x'.repeat(32), '-abc', '_abc', 'claude 1', 'claude.1', '前端', 'claude-1!', 'a/b',
-    'my-discord-bot', 'discord', 'clyde-1', 'xclydex',
+    'my-discord-bot', 'discord', 'clyde-1', 'xclydex', 'Discord-1', 'my-CLYDE', 'Clyde',
+    'all', 'ALL', 'agents', 'everyone', 'Here', 'moderator', 'MODERATOR',
   ];
 
   for (const name of valid) {
@@ -898,6 +903,20 @@ describe('sanitizeRole（§7.1）', () => {
     assert.equal(sanitizeRole('前端 (主)'), '前端-主');
   });
 
+  test('discord、clyde（不分大小寫）換成 dc、cl', () => {
+    assert.equal(sanitizeRole('Discord API'), 'dc-API');
+    assert.equal(sanitizeRole('clyde助手'), 'cl助手');
+    assert.equal(sanitizeRole('xDISCORDx'), 'xdcx');
+    assert.equal(sanitizeRole('CLYDE'), 'cl');
+    // 順序：先刪字元、換空白，再換 dc/cl，最後截 40 字。
+    assert.equal(sanitizeRole('disc(ord) 助手'), 'dc-助手');
+    assert.equal(sanitizeRole('x'.repeat(35) + 'discord'), 'x'.repeat(35) + 'dc');
+    // 換完不能再拼出 discord、clyde（Discord 拒收），不釘死結果。
+    for (const role of ['clclydeyde', 'CLclydeYDE', 'discdiscordord']) {
+      assert.ok(!/discord|clyde/i.test(sanitizeRole(role) ?? ''), role);
+    }
+  });
+
   test('截到 40 字（先清理再截）', () => {
     assert.equal(sanitizeRole('x'.repeat(50)), 'x'.repeat(40));
     assert.equal(sanitizeRole('('.repeat(10) + 'y'.repeat(50)), 'y'.repeat(40));
@@ -1313,6 +1332,13 @@ describe('applyDirectives：ASSIGN', () => {
     assert.equal(s2.role, '後端');
     assert.equal(s2.task, null);
     assert.equal(s2.assignBody, '細節寫在內文');
+
+    // 新的 ASSIGN 沒有內文時，舊的分工細節不能留著。
+    const s3 = assignedState({ assignBody: '舊細節', assignMessageId: '1290000000000000001' });
+    const raw3 = modRaw('[ASSIGN] @claude-1\nrole: 後端');
+    apply(s3, [raw3]);
+    assert.ok(!s3.assignBody, JSON.stringify(s3.assignBody));
+    assert.equal(s3.assignMessageId, raw3.id);
   });
 
   test('files 依半形或全形逗號切開、去空白，存成字串陣列', () => {
@@ -1344,16 +1370,55 @@ describe('applyDirectives：ASSIGN', () => {
     assert.equal(state.role, 'QA-Lead-主');
   });
 
-  test('files 只用半形、全形逗號切，「、」不是分隔', () => {
-    const state = makeState({ phase: 'topic' });
+  test('files 也用頓號「、」分隔，去掉空項', () => {
+    let state = makeState({ phase: 'topic' });
     apply(state, [modRaw('[ASSIGN] @claude-1\nrole: 前端\nisolation: shared\nfiles: 說明、附錄.md, src/a.js')]);
-    assert.deepEqual(state.files, ['說明、附錄.md', 'src/a.js']);
+    assert.deepEqual(state.files, ['說明', '附錄.md', 'src/a.js']);
+
+    state = makeState({ phase: 'topic' });
+    apply(state, [modRaw('[ASSIGN] @claude-1\nrole: 前端\nisolation: shared\nfiles: a,,b，、 c ,')]);
+    assert.deepEqual(state.files, ['a', 'b', 'c']);
+
+    // 空白不是分隔符，路徑裡的空白要保留。
+    state = makeState({ phase: 'topic' });
+    apply(state, [modRaw('[ASSIGN] @claude-1\nrole: 前端\nisolation: shared\nfiles: docs/設計 稿.md、src/my file.js')]);
+    assert.deepEqual(state.files, ['docs/設計 稿.md', 'src/my file.js']);
+
+    // 切完沒有項目：null。
+    for (const value of ['', ' ,，、']) {
+      state = assignedState({ files: ['old'] });
+      apply(state, [modRaw(`[ASSIGN] @claude-1\nrole: 前端\nisolation: shared\nfiles:${value}`)]);
+      assert.equal(state.files, null, JSON.stringify(value));
+    }
+  });
+
+  test('同一則指派給多人（或廣播）且有 branch：注意多一句，提醒先用 ask 確認', () => {
+    // SPEC 只說「加一句」，可以是獨立一則或併在指派那則裡，所以比的是 ask 出現的次數。
+    const askCount = (content) => (apply(makeState({ phase: 'topic' }), [modRaw(content)]).join('\n').match(/(?<![A-Za-z])ask(?![A-Za-z])/g) || []).length;
+    const single = askCount('[ASSIGN] @claude-1\nrole: 前端\nbranch: feat/x');
+    for (const content of ['[ASSIGN] @claude-1 @claude-2\nrole: 前端\nbranch: feat/x', '[ASSIGN] @全體\nrole: 前端\nbranch: feat/x']) {
+      assert.ok(askCount(content) > single, content);
+      // 提醒之外，分工照樣套用。
+      const state = makeState({ phase: 'topic' });
+      apply(state, [modRaw(content)]);
+      assert.equal(state.phase, 'discussion', content);
+      assert.equal(state.assigned, true, content);
+      assert.equal(state.branch, 'feat/x', content);
+      assert.equal(state.isolation, 'worktree', content);
+    }
+    // 沒有 branch 就沒有衝突，不多提醒。
+    assert.equal(askCount('[ASSIGN] @claude-1 @claude-2\nrole: 前端'), askCount('[ASSIGN] @claude-1\nrole: 前端'));
   });
 
   test('有 branch、沒寫 isolation 時預設 worktree', () => {
     const state = makeState({ phase: 'topic' });
     apply(state, [modRaw('[ASSIGN] @claude-1\nrole: 前端\nbranch: feat/login')]);
     assert.equal(state.isolation, 'worktree');
+
+    // 是依 branch 推出的預設值，不是沿用舊的 isolation。
+    const old = assignedState({ branch: 'feat/old', isolation: 'shared' });
+    apply(old, [modRaw('[ASSIGN] @claude-1\nbranch: feat/new')]);
+    assert.equal(old.isolation, 'worktree');
   });
 
   test('@全體 的 ASSIGN 對我生效', () => {
@@ -1391,10 +1456,12 @@ describe('applyDirectives：ASSIGN', () => {
 });
 
 describe('applyDirectives：GO、CONTINUE、STOP、CLOSE', () => {
-  test('GO：已指派、討論中的 agent 階段改為 work', () => {
+  test('GO：已指派、討論中的 agent 階段改為 work，workStartedAt 設為這則訊息的時間', () => {
     const state = assignedState();
-    const notes = apply(state, [modRaw('[GO]')]);
+    const raw = modRaw('[GO]');
+    const notes = apply(state, [raw]);
     assert.equal(state.phase, 'work');
+    assert.equal(Date.parse(state.workStartedAt), Date.parse(raw.timestamp));
     assert.ok(notes.length >= 1);
   });
 
@@ -1445,6 +1512,9 @@ describe('applyDirectives：GO、CONTINUE、STOP、CLOSE', () => {
       ['@claude-1', null],
       ['@claude-1 @gemini-2', null],
       ['@claude-1 <@123456789012345678>', null],
+      // n 必須 ≥ 1；0 視同沒寫。
+      ['0', null],
+      ['0 @claude-1', null],
     ]) {
       const state = assignedState({ discussRound: 3, discussLimit: 9 });
       apply(state, [modRaw(`[CONTINUE] ${title}`)]);
@@ -1560,6 +1630,15 @@ describe('applyDirectives：GO、CONTINUE、STOP、CLOSE', () => {
       apply(state, [modRaw(cmd)]);
       assert.equal(state.phase, 'stopped', cmd);
     }
+  });
+
+  test('已經 stopped 時再收到 STOP：不覆寫 phaseBeforeStop，之後沒有 @ 的 GO 仍能叫回', () => {
+    const state = assignedState({ phase: 'work' });
+    apply(state, [modRaw('[STOP]'), modRaw('[STOP]')]);
+    assert.equal(state.phase, 'stopped');
+    assert.equal(state.phaseBeforeStop, 'work');
+    apply(state, [modRaw('[GO]')]);
+    assert.equal(state.phase, 'work');
   });
 
   test('done 的 agent 收到 STOP 後再收到沒有 @ 的 GO：仍停著', () => {
