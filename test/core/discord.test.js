@@ -71,7 +71,8 @@ const isDiscordError = (status) => (e) => {
   return true;
 };
 // 提示裡的指令可以多帶 --as 等選項，只要是 agentchat read 加 --last 5。
-const READ_HINT = /agentchat read\b[^\n]*--last 5\b/;
+// 完整的 read 指令由指令層補上（discord.js 不知道名稱與房間）；這一層只標出「不確定是否送出」。
+const isUncertain = (err) => err.uncertain === true && /Discord 沒有正常回應/.test(err.message);
 const errorOf = (promise) => promise.then(() => assert.fail('應該要丟錯'), (e) => e);
 
 // ---- snowflake ----
@@ -237,12 +238,12 @@ describe('executeWebhook / download', () => {
     ['5xx', (rec, res) => sendJson(res, 502, { message: 'bad gateway' })],
     ['網路錯誤', (rec) => rec.req.socket.destroy()],
   ]) {
-    test(`executeWebhook 遇到${label}：不重試，提示先用 read --last 5 確認`, async () => {
+    test(`executeWebhook 遇到${label}：不重試，標成可能已經送出`, async () => {
       serve(fail);
       const err = await errorOf(client().executeWebhook(HOOK, { content: '[INFO] hi', username: 'claude-1', allowedMentions: { parse: [] } }));
       isDiscordError()(err);
       assert.equal(requests.length, 1);
-      assert.ok(READ_HINT.test(err.message), err.message);
+      assert.ok(isUncertain(err), err.message);
     });
   }
 
@@ -272,7 +273,7 @@ describe('executeWebhook / download', () => {
     assert.ok(requests[1].body.toString().includes('hello again'));
   });
 
-  test('executeWebhook 已回 200 但內文讀到一半斷線：不重試，提示先用 read --last 5 確認', async () => {
+  test('executeWebhook 已回 200 但內文讀到一半斷線：不重試，標成可能已經送出', async () => {
     serve((rec, res) => {
       res.writeHead(200, { 'content-type': 'application/json', 'content-length': '100' });
       res.write('{"id":"55');
@@ -281,7 +282,7 @@ describe('executeWebhook / download', () => {
     const err = await errorOf(client().executeWebhook(HOOK, { content: '[INFO] hi', username: 'claude-1', allowedMentions: { parse: [] } }));
     isDiscordError()(err);
     assert.equal(requests.length, 1);
-    assert.ok(READ_HINT.test(err.message), err.message);
+    assert.ok(isUncertain(err), err.message);
   });
 
   test('download 回傳檔案內容的 Buffer', async () => {
@@ -396,7 +397,8 @@ describe('重試（429、5xx、網路錯誤）', { timeout: 20000 }, () => {
     const t0 = Date.now();
     await assert.rejects(client().channel('1'), isDiscordError(502));
     assert.equal(requests.length, 6);
-    assert.ok(Date.now() - t0 < 1000, `retryBaseMs 1 卻花了 ${Date.now() - t0} ms`);
+    // 預設 retryBaseMs 1000 時這裡至少要 15 秒；放寬到 5 秒仍分得出來，又不會因為機器忙而誤判。
+    assert.ok(Date.now() - t0 < 5000, `retryBaseMs 1 卻花了 ${Date.now() - t0} ms`);
   });
 
   test('退避時間是線性的：第 n 次重試等 retryBaseMs × n', async () => {
@@ -426,7 +428,8 @@ describe('重試（429、5xx、網路錯誤）', { timeout: 20000 }, () => {
     const t0 = Date.now();
     await assert.rejects(client().me(), isDiscordError());
     assert.equal(requests.length, 6);
-    assert.ok(Date.now() - t0 < 1000, `retryBaseMs 1 卻花了 ${Date.now() - t0} ms`);
+    // 預設 retryBaseMs 1000 時這裡至少要 15 秒；放寬到 5 秒仍分得出來，又不會因為機器忙而誤判。
+    assert.ok(Date.now() - t0 < 5000, `retryBaseMs 1 卻花了 ${Date.now() - t0} ms`);
   });
 
   test('網路錯誤之後恢復：回傳結果', async () => {

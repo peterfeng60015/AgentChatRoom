@@ -11,7 +11,13 @@ const DOWNLOAD_TIMEOUT_MS = 120_000;
 const MAX_RATE_LIMIT_WAIT_MS = 60_000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const UNCERTAIN_HINT = 'Discord 沒有正常回應，訊息可能已經送出，先用 agentchat read --last 5 確認再決定要不要重發';
+// 發言沒有正常回應時，訊息可能已經送出。這裡不知道 agent 名稱與房間，完整的 read 指令由指令層（sendParts）補上。
+const UNCERTAIN_HINT = 'Discord 沒有正常回應';
+function uncertain(status, why) {
+  const e = new DiscordError(status, null, `${UNCERTAIN_HINT}（${why}）`);
+  e.uncertain = true;
+  return e;
+}
 
 // 真正的網路問題（連不上、逾時）才重試；其他例外（例如 token 含換行讓 header 不合法）不重試，
 // 而且訊息可能含 token，不能原樣印出。
@@ -81,7 +87,7 @@ export function createClient(token, { apiBase, retryBaseMs = 1000, timeoutMs = R
         res = await fetch(base + route, { method, headers, body, signal: AbortSignal.timeout(timeout) });
       } catch (e) {
         if (!isNetworkError(e)) throw new DiscordError(0, null, '無法送出 Discord API 請求（請檢查 bot token 是否含換行或特殊字元）');
-        if (!retryUncertain) throw new DiscordError(0, null, `${UNCERTAIN_HINT}（${e.name === 'TimeoutError' ? '逾時' : e.cause?.code || '連線失敗'}）`);
+        if (!retryUncertain) throw uncertain(0, e.name === 'TimeoutError' ? '逾時' : e.cause?.code || '連線失敗');
         if (attempt < MAX_RETRIES) {
           await sleep(retryBaseMs * (attempt + 1));
           continue;
@@ -99,7 +105,7 @@ export function createClient(token, { apiBase, retryBaseMs = 1000, timeoutMs = R
       }
       if (res.status >= 500 && !retryUncertain) {
         await res.arrayBuffer().catch(() => null);
-        throw new DiscordError(res.status, null, `${UNCERTAIN_HINT}（HTTP ${res.status}）`);
+        throw uncertain(res.status, `HTTP ${res.status}`);
       }
       if (res.status >= 500 && attempt < MAX_RETRIES) {
         await res.arrayBuffer().catch(() => null);
@@ -111,7 +117,7 @@ export function createClient(token, { apiBase, retryBaseMs = 1000, timeoutMs = R
       try {
         text = await res.text();
       } catch {
-        if (!retryUncertain) throw new DiscordError(0, null, `${UNCERTAIN_HINT}（讀取回應失敗）`);
+        if (!retryUncertain) throw uncertain(0, '讀取回應失敗');
         if (attempt < MAX_RETRIES) {
           await sleep(retryBaseMs * (attempt + 1));
           continue;

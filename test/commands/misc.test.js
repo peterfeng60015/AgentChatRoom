@@ -145,7 +145,10 @@ describe('doctor', () => {
     assert.ok(lines.some((l) => /^\[OK\] Message Content Intent/.test(l)));
     assert.ok(lines.some((l) => /^\[OK\] 主導者：Peter（peter，id=300000000000000003）/.test(l)));
     assert.ok(lines.some((l) => /^\[OK\] webhook：已建立新的 webhook/.test(l)));
-    assert.match(lines.at(-1), /^總結：OK \d+、WARN 0、FAIL 0/);
+    // 測試一定把 AGENTCHAT_API_BASE 指到本機假 Discord，所以會有一個 API 位址的 WARN（第 11 項）。
+    assert.ok(lines.some((l) => /^\[WARN\] API 位址：AGENTCHAT_API_BASE 不是預設值：http:\/\/127\.0\.0\.1/.test(l)));
+    assert.ok(!lines.some((l) => /不是 https，也不是本機/.test(l)), '本機位址不另外標出');
+    assert.match(lines.at(-1), /^總結：OK \d+、WARN 1、FAIL 0/);
     assert.equal(env.mock.executions.length, 0, '沒帶 --send-test 不發訊息');
     assert.ok(!r.stdout.includes(env.mock.config.token));
     assert.ok(!r.stdout.includes(env.mock.webhooks[0].token));

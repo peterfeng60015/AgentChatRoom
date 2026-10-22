@@ -184,12 +184,12 @@ export async function run(ctx) {
     ...stateLines(state, room),
   ];
   if (active) {
-    text.push('', '進行中的議題：', renderMessage(active.topic, { as: name }));
-    if (applied.length) text.push('', '之後對你生效的主導者指令：', renderMessages(applied, { as: name }));
+    text.push('', '進行中的議題：', renderMessage(active.topic, { as: name, room }));
+    if (applied.length) text.push('', '之後對你生效的主導者指令：', renderMessages(applied, { as: name, room }));
   }
   const n = section('注意', notes);
   if (n) text.push(n);
-  const tail = section('下一步', rem);
+  const tail = section('提醒', rem);
   if (tail) text.push(tail);
   return {
     text,

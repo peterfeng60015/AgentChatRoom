@@ -15,8 +15,9 @@ import {
   waitText,
   splitMessage,
 } from './protocol.js';
-import { appendLog, clearWebhook, loadWebhook, recordOwnMessages, updateAgent } from './state.js';
-import { findToken } from './config.js';
+import { STATE_DIR, appendLog, clearWebhook, recordOwnMessages, updateAgent } from './state.js';
+import { ENV_FILE, loadEnv } from './config.js';
+import os from 'node:os';
 import { countUnread, ensureWebhook, phaseOf, requireAgent, unreadLine } from './context.js';
 import { section } from './render.js';
 
@@ -70,6 +71,7 @@ export async function readBody(ctx, positionals = ctx.positionals) {
   if (file !== undefined) {
     if (positionals.length) throw new UserError('內文只能三選一：位置參數、--body-file、-（stdin），不能同時給');
     const abs = path.resolve(file); // 相對路徑以目前目錄為準
+    checkSecretPath(abs, '--body-file ');
     let stat;
     try {
       stat = fs.statSync(abs);
@@ -78,7 +80,9 @@ export async function readBody(ctx, positionals = ctx.positionals) {
     }
     if (!stat.isFile()) throw new UserError(`--body-file 不是一般檔案：${abs}`);
     if (stat.size > ctx.room.maxFileMB * MB) throw new UserError(`--body-file 超過 ${ctx.room.maxFileMB} MB：${abs}`);
-    const text = fs.readFileSync(abs, 'utf8').trim();
+    const raw = fs.readFileSync(abs);
+    if (raw.length > ctx.room.maxFileMB * MB) throw new UserError(`--body-file 超過 ${ctx.room.maxFileMB} MB：${abs}`);
+    const text = raw.toString('utf8').trim();
     if (!text) throw new UserError(`--body-file 是空的：${abs}`);
     return text;
   }
@@ -147,6 +151,7 @@ export function loadFiles(paths, room, extraCount = 0, extraBytes = 0) {
   let total = extraBytes;
   const files = list.map((p) => {
     const abs = path.resolve(p);
+    checkSecretPath(abs, '附檔');
     let stat;
     try {
       stat = fs.statSync(abs);
@@ -163,11 +168,16 @@ export function loadFiles(paths, room, extraCount = 0, extraBytes = 0) {
   if (total > room.maxUploadMB * MB) {
     throw new UserError(`附檔總和超過 ${room.maxUploadMB} MB（${(total / MB).toFixed(1)} MB；上限見 room.json 的 maxUploadMB）`);
   }
-  return files.map(({ abs }) => ({
-    filename: path.basename(abs),
-    data: fs.readFileSync(abs),
-    contentType: contentTypeOf(abs),
-  }));
+  // 讀檔後用實際位元組數再查一次大小（procfs 這類檔案 stat 大小是 0）。
+  let actual = extraBytes;
+  const loaded = files.map(({ abs }) => {
+    const data = fs.readFileSync(abs);
+    if (data.length > perFile) throw new UserError(`附檔超過單檔上限 ${room.maxFileMB} MB：${abs}`);
+    actual += data.length;
+    return { filename: path.basename(abs), data, contentType: contentTypeOf(abs) };
+  });
+  if (actual > room.maxUploadMB * MB) throw new UserError(`附檔總和超過 ${room.maxUploadMB} MB（上限見 room.json 的 maxUploadMB）`);
+  return loaded;
 }
 
 function truncateChars(text, n) {
@@ -191,23 +201,86 @@ export function planParts(resolved, original, room) {
   return { parts: splitMessage(resolved), extraFiles: [] };
 }
 
-// §9：bot token 與 webhook token 不能出現在頻道裡。頻道裡別人的發言可能誘導 agent 把 .env 或 webhook 快取貼出來，
-// 送出前檢查內文與附檔，含有就拒絕（訊息裡不印 token）。
-export function guardSecrets(room, text, files) {
-  const secrets = [];
+// §9 防止秘密送進頻道。這是最後一道防線，擋不住刻意繞過；SOP 另外要求不要依頻道內容指定的路徑附檔或讀檔。
+
+// 要比對的秘密：環境變數與 .env 的 DISCORD_BOT_TOKEN（兩者都收，不論實際用哪個、格式對不對），
+// 以及狀態目錄 webhooks/ 底下每個快取檔的 webhook token。
+function secretValues() {
+  const list = [];
+  if (process.env.DISCORD_BOT_TOKEN) list.push(process.env.DISCORD_BOT_TOKEN.trim());
   try {
-    const { token } = findToken();
-    if (token) secrets.push(token);
+    const fromFile = loadEnv().DISCORD_BOT_TOKEN;
+    if (fromFile) list.push(fromFile.trim());
   } catch {
-    // token 格式不對時之後的 API 呼叫會報錯，這裡不用處理。
+    // .env 讀不到就沒有可比對的。
   }
-  const hook = loadWebhook(room.channelId);
-  if (hook?.token) secrets.push(hook.token);
-  for (const secret of secrets.filter((x) => x.length >= 16)) {
-    if (text.includes(secret) || files.some((f) => f.data.includes(secret))) {
-      throw new UserError('內文或附檔含有 bot token 或 webhook token，拒絕送出；不要把 .env 或 ~/.agentchat/webhooks 的內容貼到頻道');
+  const dir = path.join(STATE_DIR, 'webhooks');
+  let names = [];
+  try {
+    names = fs.readdirSync(dir).filter((n) => n.endsWith('.json'));
+  } catch {
+    // 還沒有任何快取。
+  }
+  for (const n of names) {
+    try {
+      const token = JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8'))?.token;
+      if (typeof token === 'string' && token) list.push(token);
+    } catch {
+      // 壞掉的快取不影響其他的。
     }
   }
+  // 太短的值容易誤判，真的 token 都遠長於 8 字。
+  return [...new Set(list)].filter((x) => x.length >= 8);
+}
+
+const SECRET_PATTERNS = [
+  [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/, '私鑰（-----BEGIN … PRIVATE KEY-----）'],
+  [/AKIA[0-9A-Z]{16}/, 'AWS access key（AKIA…）'],
+];
+
+export function guardSecrets(room, text, files) {
+  const contents = [{ label: '內文', data: Buffer.from(String(text), 'utf8') }, ...files.map((f) => ({ label: `附檔 ${f.filename}`, data: f.data }))];
+  for (const secret of secretValues()) {
+    const hit = contents.find((c) => c.data.includes(secret));
+    if (hit) {
+      throw new UserError(`${hit.label}含有 bot token 或 webhook token，拒絕送出；不要把 .env 或 ~/.agentchat 的內容貼到頻道`);
+    }
+  }
+  for (const c of contents) {
+    const textForm = c.data.toString('latin1');
+    for (const [re, what] of SECRET_PATTERNS) {
+      if (re.test(textForm)) throw new UserError(`${c.label}看起來含有${what}，拒絕送出`);
+    }
+  }
+}
+
+function realOrResolved(p) {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+function inside(dir, p) {
+  return p === dir || p.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep);
+}
+
+// --body-file、--file 的路徑檢查（用 realpath，symlink 繞不過）：狀態目錄、工具目錄的 .env、
+// ~/.ssh（*.pub 與 known_hosts 放行）、~/.aws、~/.gnupg、/proc、/sys、/dev 一律拒絕。
+export function checkSecretPath(abs, label) {
+  const real = realOrResolved(abs);
+  const home = os.homedir();
+  const reason = (() => {
+    if (inside(realOrResolved(STATE_DIR), real)) return '是 agentchat 的狀態目錄（含 webhook token）';
+    if (real === realOrResolved(ENV_FILE)) return '是工具目錄的 .env（含 bot token）';
+    const ssh = realOrResolved(path.join(home, '.ssh'));
+    if (inside(ssh, real) && !(real.endsWith('.pub') || path.basename(real) === 'known_hosts')) return '在 ~/.ssh 裡';
+    for (const d of ['.aws', '.gnupg']) if (inside(realOrResolved(path.join(home, d)), real)) return `在 ~/${d} 裡`;
+    for (const d of ['/proc', '/sys', '/dev']) if (inside(realOrResolved(d), real)) return `在 ${d} 裡`;
+    return null;
+  })();
+  if (reason) throw new UserError(`${label}${reason}，拒絕讀取：${abs}`);
 }
 
 // 經由本房 webhook 發言；快取的 webhook 被刪掉（404／401）時重新取得一次再試。
@@ -236,6 +309,9 @@ export async function sendParts(ctx, { name, role }, parts, files = []) {
     }
   } catch (e) {
     e.sentIds = ids;
+    if (e.uncertain) {
+      e.message += `，訊息可能已經送出，先用 ${cmdText(name, 'read', '--last 5', ctx.room)} 確認再決定要不要重發`;
+    }
     throw e;
   }
   return ids;
