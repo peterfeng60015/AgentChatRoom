@@ -152,9 +152,9 @@ test('roomFile：沒給名稱是 config/room.json，--room 名稱是 config/room
 
 // ---- loadRoom ----
 
-test('loadRoom：只有必填欄位時合併 §3.1 全部預設值，另加 file', () => {
+test('loadRoom：只有必填欄位時合併 §3.1 全部預設值，另加 file 與 roomArg', () => {
   const file = writeRoom(REQUIRED);
-  assert.deepEqual(loadRoom(), { ...DEFAULTS, ...REQUIRED, file });
+  assert.deepEqual(loadRoom(), { ...DEFAULTS, ...REQUIRED, file, roomArg: null });
 });
 
 test('loadRoom：設定檔的值覆寫預設值', () => {
@@ -169,7 +169,7 @@ test('loadRoom：設定檔的值覆寫預設值', () => {
     longTextChars: 3000,
   };
   const file = writeRoom(custom);
-  assert.deepEqual(loadRoom(), { ...DEFAULTS, ...custom, file });
+  assert.deepEqual(loadRoom(), { ...DEFAULTS, ...custom, file, roomArg: null });
 });
 
 for (const key of Object.keys(REQUIRED)) {
@@ -206,6 +206,7 @@ test('loadRoom：--room 名稱讀 config/rooms/<名稱>.json', () => {
   assert.equal(room.roomName, 'lab');
   assert.equal(room.file, file);
   assert.equal(room.maxDiscussionRounds, DEFAULTS.maxDiscussionRounds);
+  assert.equal(room.roomArg, 'lab');
 });
 
 test('loadRoom：--room 的設定檔也檢查必填欄位', () => {
