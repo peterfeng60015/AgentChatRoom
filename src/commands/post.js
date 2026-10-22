@@ -37,14 +37,16 @@ function parseFields(list = []) {
 
 export async function run(ctx) {
   // 先確認身分：沒給 --as 或還沒 join 是結束碼 2，不該被標籤檢查搶先變成 3。
-  requireAgent(ctx);
+  const state = requireAgent(ctx);
   const tag = (ctx.values.tag ?? 'INFO').trim().toUpperCase();
-  checkPostTag(tag);
+  checkPostTag(tag, state.name, ctx.room);
   const fields = parseFields(ctx.values.field);
   const title = ctx.values.title !== undefined ? oneLine(ctx.values.title) : '';
   const body = await readBody(ctx);
   // 內文自帶標籤列時照原樣送，--tag／--title／--field 不會生效；與其默默丟掉，不如請 agent 二選一。
   const own = parseMessageParts(body).tag;
+  // 內文是主導者標籤或 post 不收的標籤時，先照標籤規則回 3／2，再談選項衝突。
+  if (own) checkPostTag(own, state.name, ctx.room);
   if (own && (ctx.values.title !== undefined || Object.keys(fields).length || (ctx.values.tag !== undefined && own !== tag))) {
     throw new UserError(`內文已經以 [${own}] 標籤列開頭，不能再給 --tag（不同標籤）、--title 或 --field；請擇一`);
   }

@@ -1,5 +1,5 @@
 import { BODY_OPTIONS, BODY_SOURCE_HELP, publish, publishResult, readBody } from '../publish.js';
-import { roundInfo } from '../context.js';
+import { requireAgent, roundInfo } from '../context.js';
 
 export const summary = '發 [DISCUSS] 討論發言，只在 discussion 階段可用，計入討論輪數';
 export const usage = 'agentchat discuss --as <名稱> [--file <路徑>]... <內文|->';
@@ -8,6 +8,7 @@ export const details = [
   BODY_SOURCE_HELP,'每段討論的則數上限見 status；達到上限後用 wait --until moderator 等主導者 [CONTINUE] 或 [GO]。'];
 
 export async function run(ctx) {
+  requireAgent(ctx); // 先確認身分，免得沒 join 卻先去讀 --body-file 或 stdin
   const body = await readBody(ctx);
   const result = await publish(ctx, {
     command: 'discuss',

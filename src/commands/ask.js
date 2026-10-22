@@ -1,4 +1,5 @@
 import { waitText } from '../protocol.js';
+import { requireAgent } from '../context.js';
 import { BODY_OPTIONS, BODY_SOURCE_HELP, publish, publishResult, readBody } from '../publish.js';
 
 export const summary = '發 [QUESTION] 向主導者提問，會真的 @ 主導者';
@@ -10,6 +11,7 @@ export const details = [
 export async function run(ctx) {
   const room = ctx.room;
   const mention = `<@${room.moderatorUserId}>`;
+  requireAgent(ctx); // 先確認身分，免得沒 join 卻先去讀 --body-file 或 stdin
   const body = await readBody(ctx);
   // §6.3：第一行是 `[QUESTION] <@主導者> <問題的第一行>`，其餘行是內文。
   const [firstLine, ...restLines] = body.split('\n');

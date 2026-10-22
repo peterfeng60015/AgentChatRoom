@@ -9,6 +9,7 @@ import {
   parseMessageParts,
   phaseError,
   reminders,
+  cmdText,
   resolveMentions,
   roundLimit,
   waitText,
@@ -100,13 +101,13 @@ const TAG_COMMAND = {
   IDLE: null,
 };
 
-export function checkPostTag(tag) {
+export function checkPostTag(tag, name = '<你的名稱>', room = null) {
   if (MODERATOR_TAGS.includes(tag)) throw new ProtocolError(`[${tag}] 是主導者專用標籤，agent 不能發`);
   if (POST_TAGS.includes(tag)) return;
   if (tag in TAG_COMMAND) {
     const cmd = TAG_COMMAND[tag];
     throw new UserError(
-      cmd ? `post 只發 [INFO] 或 [DISCUSS]；[${tag}] 請改用 agentchat ${cmd} --as <名稱>` : `post 只發 [INFO] 或 [DISCUSS]；[${tag}] 由 wait 自動發出`,
+      cmd ? `post 只發 [INFO] 或 [DISCUSS]；[${tag}] 請改用 ${cmdText(name, cmd, '', room)}` : `post 只發 [INFO] 或 [DISCUSS]；[${tag}] 由 wait 自動發出`,
     );
   }
   throw new UserError(`不認得的標籤 ${tag}；post 只接受 INFO、DISCUSS`);
@@ -116,16 +117,16 @@ export function checkPostTag(tag) {
 // 專用指令（discuss、ack…）的內文若是別的 agent 標籤就拒絕，避免繞過該指令的規則。
 // rawBody 是使用者給的原始內文；指令自己拆過內文時（ask 把第一行放進標題）用它判斷標籤。
 // userOptions：指令帶了使用者給的選項（progress 的 --percent、done 的 --commit 等），照原樣送會把它們丟掉，所以拒絕。
-export function composeText({ command, tag, title = '', fields = {}, body = '', rawBody, userOptions = false }) {
+export function composeText({ command, tag, title = '', fields = {}, body = '', rawBody, userOptions = false, name = '<你的名稱>', room = null }) {
   const raw = rawBody ?? body;
   const parsed = parseMessageParts(raw);
   if (parsed.tag) {
     if (MODERATOR_TAGS.includes(parsed.tag)) {
       throw new ProtocolError(`[${parsed.tag}] 是主導者專用標籤，agent 不能發`);
     }
-    if (command === 'post') checkPostTag(parsed.tag);
+    if (command === 'post') checkPostTag(parsed.tag, name, room);
     else if (parsed.tag !== tag) {
-      throw new UserError(`${command} 只發 [${tag}]，內文開頭的 [${parsed.tag}] 不符；請拿掉標籤列，或改用 agentchat post --as <名稱>`);
+      throw new UserError(`${command} 只發 [${tag}]，內文開頭的 [${parsed.tag}] 不符；請拿掉標籤列，或改用 ${cmdText(name, 'post', '', room)}`);
     }
     if (userOptions) {
       throw new UserError(`內文已經以 [${parsed.tag}] 標籤列開頭，${command} 的選項不會生效；請拿掉內文的標籤列`);
@@ -251,7 +252,7 @@ export async function publish(ctx, opts) {
     throw new UserError(`缺少內文：agentchat ${opts.command} --as ${state.name} <內文|->`);
   }
 
-  const composed = composeText({ ...opts, body });
+  const composed = composeText({ ...opts, body, name: state.name, room });
   let text = composed.text;
   const tag = composed.tag;
 
@@ -329,7 +330,7 @@ export function publishResult(result, room, { lines = [], data = {}, showUnread 
   const out = [`已送出 [${tag}]，訊息 ID：${ids[0]}${ids.length > 1 ? `（切成 ${ids.length} 則：${ids.join(', ')}）` : ''}`];
   if (files.length) out.push(`附檔：${files.join('、')}`);
   if (showUnread) {
-    const u = unreadLine(unread, state.name);
+    const u = unreadLine(unread, state.name, room);
     if (u) out.push(u);
     if (unreadError) out.push(`未讀：無法取得（${unreadError}）`);
   }

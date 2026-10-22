@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { BIN, setup, webhookMessages } from './helpers.js';
+import { BIN, REPO, setup, webhookMessages } from './helpers.js';
 import { createClient } from '../../src/discord.js';
 import { DiscordError } from '../../src/errors.js';
 import { normalize } from '../../src/protocol.js';
@@ -175,7 +175,7 @@ describe('CLI 與指令層的修正', () => {
     env.mock.fail({ method: 'POST', path: /^\/webhooks\//, status: 500 });
     r = await env.run(['post', '--as', 'claude-1', '短訊息']);
     assert.equal(r.code, 1);
-    assert.match(r.stderr, /可能已經送出，先用 agentchat read --as <你的名稱> --last 5 確認/);
+    assert.match(r.stderr, /可能已經送出，先用 agentchat read --last 5 確認/);
     assert.equal(webhookPosts(env.mock).length - before, 1, '只送一次，不重試');
   });
 
@@ -198,8 +198,9 @@ describe('CLI 與指令層的修正', () => {
 
   test('同名 wait 互斥（結束碼 3）；殘留的鎖（pid 已不在）直接接手', async () => {
     await env.join('claude-1');
-    const first = env.run(['wait', '--as', 'claude-1', '--timeout', '2']);
-    await sleep(600);
+    const first = env.run(['wait', '--as', 'claude-1', '--timeout', '3']);
+    const lockFile = path.join(env.stateDir, 'agents', env.room.channelId, 'claude-1.wait.lock');
+    for (let i = 0; i < 200 && !fs.existsSync(lockFile); i++) await sleep(20);
     const second = await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
     assert.equal(second.code, 3);
     assert.match(second.stderr, /同名已有另一個 wait 在執行（pid \d+，\d\d\/\d\d \d\d:\d\d:\d\d 開始），先讀完它的輸出/);
@@ -349,8 +350,10 @@ describe('CLI 與指令層的修正', () => {
     await env.join('claude-1');
     env.patchState('claude-1', { phase: 'work', assigned: true });
     env.mock.delay({ method: 'POST', path: /^\/webhooks\//, ms: 800 });
+    const posts = webhookPosts(env.mock).length;
     const done = env.run(['done', '--as', 'claude-1', '做完了']);
-    await sleep(200);
+    // 等 done 的發言真的送到假 Discord（被 delay 卡住），也就是已經過了階段檢查，再發 [STOP]。
+    for (let i = 0; i < 200 && webhookPosts(env.mock).length === posts; i++) await sleep(20);
     env.mock.addMessage({ content: '[STOP]' });
     await env.run(['wait', '--as', 'claude-1', '--timeout', '0']);
     assert.equal((await done).code, 0);
@@ -440,6 +443,73 @@ describe('CLI 與指令層的修正', () => {
     }
   });
 
+  test('帶 --room 時，提示下一步的指令也帶 --room', async () => {
+    fs.mkdirSync(path.join(env.home, 'config', 'rooms'));
+    fs.copyFileSync(path.join(env.home, 'config', 'room.json'), path.join(env.home, 'config', 'rooms', 'b.json'));
+    const r = await env.run(['join', '--as', 'claude-1', '--vendor', 'claude', '--room', 'b']);
+    assert.equal(r.code, 0, r.stderr);
+    const hints = r.stdout.match(/agentchat [a-z]+ --as[^\n。，；]*/g) || [];
+    assert.ok(hints.length > 0, r.stdout);
+    for (const h of hints) assert.match(h, /--room b/, h);
+    env.mock.addMessage({ author: 'human', content: '未讀' });
+    const p = await env.run(['post', '--as', 'claude-1', '--room', 'b', 'hi']);
+    assert.match(p.stdout, /agentchat wait --as claude-1 --room b --timeout 0/);
+  });
+
+  test('post 內文是主導者標籤時，就算帶了選項也是 3；JOIN 的 --model 帶 token 會被擋', async () => {
+    await env.join('claude-1');
+    assert.equal((await env.run(['post', '--as', 'claude-1', '--title', 't', '[TOPIC] x'])).code, 3);
+    assert.equal((await env.run(['post', '--as', 'claude-1', '--tag', 'INFO', '[CLOSE] x'])).code, 3);
+    const r = await env.run(['post', '--as', 'claude-1', '[ACK] x']);
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /agentchat ack --as claude-1/, '已知名稱時不印佔位');
+    const token = env.mock.webhooks[0].token;
+    const before = env.mock.messages.length;
+    const j = await env.run(['join', '--as', 'claude-2', '--vendor', 'claude', '--model', token]);
+    assert.equal(j.code, 2);
+    assert.equal(env.mock.messages.length, before);
+  });
+
+  test('join 第 1 步先檢查頻道：--resume 與本機使用中也一樣；discuss、ask 先確認身分', async () => {
+    await env.join('claude-1');
+    env.mock.config.channelGuildId = '999';
+    assert.equal((await env.run(['join', '--as', 'claude-1', '--vendor', 'claude', '--resume'])).code, 2);
+    assert.equal((await env.run(['join', '--as', 'claude-1', '--vendor', 'claude'])).code, 2);
+    env.mock.config.channelGuildId = null;
+    for (const cmd of ['discuss', 'ask']) {
+      const r = await env.run([cmd, '--as', 'nobody-1', '--body-file', 'nope.txt']);
+      assert.equal(r.code, 2);
+      assert.match(r.stderr, /還沒進房/, cmd);
+    }
+  });
+
+  test('同名 wait 鎖：有殘留鎖時多個行程同時搶，只有一個拿到', async () => {
+    const dir = path.join(env.stateDir, 'agents', env.room.channelId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'claude-1.wait.lock'), '999999');
+    const script = path.join(env.root, 'grab.mjs');
+    fs.writeFileSync(
+      script,
+      `const { acquireWaitLock } = await import(${JSON.stringify(path.join(REPO, 'src', 'state.js'))});
+const start = Number(process.argv[2]);
+while (Date.now() < start) {}
+try { const rel = acquireWaitLock(${JSON.stringify(env.room.channelId)}, 'claude-1'); console.log('GOT'); await new Promise((r) => setTimeout(r, 800)); rel(); } catch { console.log('NO'); }
+`,
+    );
+    const start = Date.now() + 800;
+    const outs = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        new Promise((resolve) => {
+          const c = spawn(process.execPath, [script, String(start)], { env: { ...process.env, AGENTCHAT_STATE_DIR: env.stateDir } });
+          let out = '';
+          c.stdout.on('data', (d) => (out += d));
+          c.on('close', () => resolve(out.trim()));
+        }),
+      ),
+    );
+    assert.equal(outs.filter((o) => o === 'GOT').length, 1, outs.join(','));
+  });
+
   test('未讀超過抓取上限時標成 N+', async () => {
     await env.join('claude-1');
     for (let i = 0; i < 520; i++) env.mock.addMessage({ author: 'human', content: `m${i}` });
@@ -470,6 +540,9 @@ describe('設定檔與協定的修正', () => {
     fs.writeFileSync(path.join(env.home, '.env'), `DISCORD_BOT_TOKEN=${env.mock.config.token} # 我的 bot\n`);
     const r = await env.run(['doctor'], { env: { DISCORD_BOT_TOKEN: undefined } });
     assert.equal(r.code, 0, r.stdout);
+    fs.writeFileSync(path.join(env.home, '.env'), `DISCORD_BOT_TOKEN="${env.mock.config.token}"  # 加引號也可以接註解\n`);
+    const q = await env.run(['doctor'], { env: { DISCORD_BOT_TOKEN: undefined } });
+    assert.equal(q.code, 0, q.stdout);
   });
 
   test('[CONTINUE]：@名稱後面緊接中文、全形數字都取得到 n', async () => {
@@ -533,7 +606,19 @@ describe('設定檔與協定的修正', () => {
       assert.ok(p.length <= 2000);
       assert.equal(p.split('\n').filter((l) => /^\s*```/.test(l)).length % 2, 0, p.slice(0, 30));
     }
-    assert.ok(parts.join('').replace(/\n\(\d+\/\d+\)/g, '').replace(/\n```\n?/g, '').replace(/\n/g, '').includes(json.slice(-200)));
+    const joined = parts
+      .map((p) => p.replace(/\n\(\d+\/\d+\)$/, ''))
+      .join('\n')
+      .split('\n')
+      .filter((l) => l !== '```')
+      .join('');
+    assert.ok(joined.includes(json.slice(1)), '長 JSON 完整保留');
+    // fence 裡有一行和開頭行一模一樣、又剛好落在段尾時，不能被當成「剛打開的 fence」拿掉。
+    skip = env.mock.executions.length;
+    const inner = Array.from({ length: 60 }, (_, i) => (i === 58 ? '```js' : `${i} ${'y'.repeat(30)}`)).join('\n');
+    assert.equal((await env.run(['post', '--as', 'claude-1', `\`\`\`js\n${inner}\n\`\`\``])).code, 0);
+    parts = env.mock.executions.slice(skip).map((e) => e.payload.content);
+    assert.equal(parts.join('\n').split('\n').filter((l) => l === '```js').length - (parts.length - 1), 2, '原文的兩行 ```js 都要在');
     skip = env.mock.executions.length;
     assert.equal((await env.run(['post', '--as', 'claude-1', `\`\`\`npm test\`\`\`\n${'x'.repeat(2500)}`])).code, 0);
     parts = env.mock.executions.slice(skip).map((e) => e.payload.content);

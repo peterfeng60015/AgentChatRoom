@@ -11,7 +11,7 @@ const DOWNLOAD_TIMEOUT_MS = 120_000;
 const MAX_RATE_LIMIT_WAIT_MS = 60_000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const UNCERTAIN_HINT = 'Discord 沒有正常回應，訊息可能已經送出，先用 agentchat read --as <你的名稱> --last 5 確認再決定要不要重發';
+const UNCERTAIN_HINT = 'Discord 沒有正常回應，訊息可能已經送出，先用 agentchat read --last 5 確認再決定要不要重發';
 
 // 真正的網路問題（連不上、逾時）才重試；其他例外（例如 token 含換行讓 header 不合法）不重試，
 // 而且訊息可能含 token，不能原樣印出。
@@ -65,7 +65,7 @@ export function createClient(token, { apiBase, retryBaseMs = 1000, timeoutMs = R
 
   // label 是給錯誤訊息看的路徑；webhook 路徑含 token，絕不能原樣放進錯誤訊息。
   // retryUncertain 為 false 的請求（發言）不重試 5xx 與網路錯誤：Discord 可能已經收下，重試會重複發言。
-  async function request(method, route, { json, form, auth = true, label = route, retryUncertain = true } = {}) {
+  async function request(method, route, { json, form, auth = true, label = route, retryUncertain = true, timeout = timeoutMs } = {}) {
     const headers = { 'User-Agent': USER_AGENT };
     if (auth) headers.Authorization = `Bot ${token}`;
     let body;
@@ -78,7 +78,7 @@ export function createClient(token, { apiBase, retryBaseMs = 1000, timeoutMs = R
     for (let attempt = 0; ; attempt++) {
       let res;
       try {
-        res = await fetch(base + route, { method, headers, body, signal: AbortSignal.timeout(timeoutMs) });
+        res = await fetch(base + route, { method, headers, body, signal: AbortSignal.timeout(timeout) });
       } catch (e) {
         if (!isNetworkError(e)) throw new DiscordError(0, null, '無法送出 Discord API 請求（請檢查 bot token 是否含換行或特殊字元）');
         if (!retryUncertain) throw new DiscordError(0, null, `${UNCERTAIN_HINT}（${e.name === 'TimeoutError' ? '逾時' : e.cause?.code || '連線失敗'}）`);
@@ -191,7 +191,14 @@ export function createClient(token, { apiBase, retryBaseMs = 1000, timeoutMs = R
         payload.attachments = files.map((f, i) => ({ id: i, filename: f.filename }));
       }
       const route = `${webhookRoute(webhook)}?wait=true`;
-      const opts = { auth: false, label: webhookLabel(webhook), retryUncertain: false };
+      // 有附檔時逾時依大小放寬（每 MB 多 10 秒），慢網路上傳大檔才不會必定逾時。
+      const bytes = files.reduce((n, f) => n + (f.data?.length ?? 0), 0);
+      const opts = {
+        auth: false,
+        label: webhookLabel(webhook),
+        retryUncertain: false,
+        timeout: timeoutMs + Math.ceil(bytes / (1024 * 1024)) * 10_000,
+      };
       if (!files.length) return request('POST', route, { ...opts, json: payload });
       const form = new FormData();
       form.append('payload_json', JSON.stringify(payload));
