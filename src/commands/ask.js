@@ -1,3 +1,4 @@
+import { waitText } from '../protocol.js';
 import { BODY_OPTIONS, BODY_SOURCE_HELP, publish, publishResult, readBody } from '../publish.js';
 
 export const summary = '發 [QUESTION] 向主導者提問，會真的 @ 主導者';
@@ -31,7 +32,7 @@ export async function run(ctx) {
     },
   });
   return publishResult(result, room, {
-    lines: ['接著用 wait --until mention 等主導者回答'],
+    lines: [`接著用 ${waitText(result.state.name, room, 'mention')} 等主導者回答`],
     data: { pendingQuestionId: result.ids[0] },
   });
 }

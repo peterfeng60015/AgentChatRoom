@@ -11,6 +11,7 @@ import {
   reminders,
   resolveMentions,
   roundLimit,
+  waitText,
   splitMessage,
 } from './protocol.js';
 import { appendLog, clearWebhook, loadWebhook, recordOwnMessages, updateAgent } from './state.js';
@@ -105,7 +106,7 @@ export function checkPostTag(tag) {
   if (tag in TAG_COMMAND) {
     const cmd = TAG_COMMAND[tag];
     throw new UserError(
-      cmd ? `post 只發 [INFO] 或 [DISCUSS]；[${tag}] 請改用 agentchat ${cmd}` : `post 只發 [INFO] 或 [DISCUSS]；[${tag}] 由 wait 自動發出`,
+      cmd ? `post 只發 [INFO] 或 [DISCUSS]；[${tag}] 請改用 agentchat ${cmd} --as <名稱>` : `post 只發 [INFO] 或 [DISCUSS]；[${tag}] 由 wait 自動發出`,
     );
   }
   throw new UserError(`不認得的標籤 ${tag}；post 只接受 INFO、DISCUSS`);
@@ -124,7 +125,7 @@ export function composeText({ command, tag, title = '', fields = {}, body = '', 
     }
     if (command === 'post') checkPostTag(parsed.tag);
     else if (parsed.tag !== tag) {
-      throw new UserError(`${command} 只發 [${tag}]，內文開頭的 [${parsed.tag}] 不符；請拿掉標籤列，或改用 agentchat post`);
+      throw new UserError(`${command} 只發 [${tag}]，內文開頭的 [${parsed.tag}] 不符；請拿掉標籤列，或改用 agentchat post --as <名稱>`);
     }
     if (userOptions) {
       throw new UserError(`內文已經以 [${parsed.tag}] 標籤列開頭，${command} 的選項不會生效；請拿掉內文的標籤列`);
@@ -263,7 +264,7 @@ export async function publish(ctx, opts) {
   const roundFull = (s) => {
     const limit = roundLimit(s, room);
     if ((s.discussRound ?? 0) < limit) return null;
-    return `本段討論已發 ${s.discussRound}/${limit} 則 [DISCUSS]，已達上限。請 agentchat wait --until moderator 等主導者 [CONTINUE] 或 [GO]。`;
+    return `本段討論已發 ${s.discussRound}/${limit} 則 [DISCUSS]，已達上限。請 ${waitText(s.name, room, 'moderator')} 等主導者 [CONTINUE] 或 [GO]。`;
   };
   if (tag === 'DISCUSS' && roundFull(state)) throw new ProtocolError(roundFull(state));
   if (opts.transform) text = opts.transform(text);
@@ -328,7 +329,7 @@ export function publishResult(result, room, { lines = [], data = {}, showUnread 
   const out = [`已送出 [${tag}]，訊息 ID：${ids[0]}${ids.length > 1 ? `（切成 ${ids.length} 則：${ids.join(', ')}）` : ''}`];
   if (files.length) out.push(`附檔：${files.join('、')}`);
   if (showUnread) {
-    const u = unreadLine(unread);
+    const u = unreadLine(unread, state.name);
     if (u) out.push(u);
     if (unreadError) out.push(`未讀：無法取得（${unreadError}）`);
   }

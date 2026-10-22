@@ -30,6 +30,17 @@ export const ROLE_LIMIT = 40;
 export const OWN_MESSAGE_KEEP = 50;
 export const BROADCAST_NAMES = ['all', 'agents', 'everyone', 'here', '全體'];
 
+// §6.1：輸出裡提示下一步的指令一律寫完整可執行的形式，帶 --as；wait 另外帶 --timeout。
+export function waitTimeoutOf(room) {
+  return Math.min(540, Math.max(0, Math.round(room?.waitTimeoutSec ?? 90)));
+}
+export function cmdText(name, sub, args = '') {
+  return `agentchat ${sub} --as ${name}${args ? ` ${args}` : ''}`;
+}
+export function waitText(name, room, until) {
+  return cmdText(name, 'wait', `${until ? `--until ${until} ` : ''}--timeout ${waitTimeoutOf(room)}`);
+}
+
 // 各階段允許的發言指令（§5.2）。wait、status、read 這類只讀指令不在這裡管。
 export const PHASE_COMMANDS = {
   lobby: ['post', 'ask', 'leave'],
@@ -599,7 +610,7 @@ export function applyDirectives(state, messages, room) {
             ? `isolation「${m.fields.isolation}」無效（只接受 worktree、shared），已當成沒寫${branch ? '，用預設的 worktree' : ''}；有疑問請 ask。`
             : '';
         notes.push(
-          `你被指派（id=${m.id}）：${parts.join('；')}。${clash}${badIso}先用 agentchat ack 回覆你的理解，再用 agentchat discuss 討論（本段上限 ${roundLimit(state, room)} 則）。`,
+          `你被指派（id=${m.id}）：${parts.join('；')}。${clash}${badIso}先用 ${cmdText(state.name, 'ack', '<你的理解>')} 回覆，再用 ${cmdText(state.name, 'discuss', '<內文>')} 討論（本段上限 ${roundLimit(state, room)} 則）。`,
         );
         break;
       }
@@ -609,7 +620,7 @@ export function applyDirectives(state, messages, room) {
         // 工作中的長步驟不算閒置（§5.4）。
         state.emptyWaitSince = null;
         notes.push(
-          `主導者 [GO]（id=${m.id}）：討論結束，依你的分工開始執行；每完成一個里程碑用 agentchat progress 回報（至少每 ${room.progressReminderMin} 分鐘一次），做完用 agentchat done。`,
+          `主導者 [GO]（id=${m.id}）：討論結束，依你的分工開始執行；每完成一個里程碑用 ${cmdText(state.name, 'progress', '--percent <0-100> <內文>')} 回報（至少每 ${room.progressReminderMin} 分鐘一次），做完用 ${cmdText(state.name, 'done', '<摘要>')}。`,
         );
         break;
       case 'CONTINUE': {
@@ -624,11 +635,11 @@ export function applyDirectives(state, messages, room) {
         // 連續兩次 STOP 時保留第一次之前的階段，之後沒 @ 的 GO／CONTINUE 才判斷得對。
         if (state.phase !== 'stopped') state.phaseBeforeStop = state.phase;
         state.phase = 'stopped';
-        notes.push(`主導者 [STOP]（id=${m.id}）：立刻停下手上的動作，只用 agentchat wait --until moderator 等指示。`);
+        notes.push(`主導者 [STOP]（id=${m.id}）：立刻停下手上的動作，只用 ${waitText(state.name, room, 'moderator')} 等指示。`);
         break;
       case 'CLOSE':
         state.phase = 'closed';
-        notes.push(`主導者 [CLOSE]（id=${m.id}）：議題結束。請 agentchat leave，然後結束任務並向使用者報告。`);
+        notes.push(`主導者 [CLOSE]（id=${m.id}）：議題結束。請 ${cmdText(state.name, 'leave')}，然後結束任務並向使用者報告。`);
         break;
       case 'ANSWER':
         state.pendingQuestionId = null;
@@ -646,16 +657,16 @@ export function reminders(state, room, now = Date.now()) {
   const list = [];
   switch (state.phase) {
     case 'lobby':
-      list.push('目前沒有進行中的議題：用 agentchat wait --until moderator 等主導者發 [TOPIC]。');
+      list.push(`目前沒有進行中的議題：用 ${waitText(state.name, room, 'moderator')} 等主導者發 [TOPIC]。`);
       break;
     case 'topic':
-      list.push('有議題但你還沒被指派：用 agentchat wait --until mention 等 [ASSIGN]。');
+      list.push(`有議題但你還沒被指派：用 ${waitText(state.name, room, 'mention')} 等 [ASSIGN]。`);
       break;
     case 'discussion': {
       const limit = roundLimit(state, room);
       const atLimit = state.discussRound >= limit;
       list.push(
-        `討論輪數：已發 ${state.discussRound}/${limit} 則 [DISCUSS]${atLimit ? '，已達上限，請 agentchat wait --until moderator 等 [CONTINUE] 或 [GO]' : ''}。`,
+        `討論輪數：已發 ${state.discussRound}/${limit} 則 [DISCUSS]${atLimit ? `，已達上限，請 ${waitText(state.name, room, 'moderator')} 等 [CONTINUE] 或 [GO]` : ''}。`,
       );
       break;
     }
@@ -665,22 +676,22 @@ export function reminders(state, room, now = Date.now()) {
       if (Number.isFinite(since)) {
         const minutes = Math.floor((now - since) / 60000);
         if (minutes >= room.progressReminderMin) {
-          list.push(`距上次 [PROGRESS] 已 ${minutes} 分鐘，請用 agentchat progress 回報進度。`);
+          list.push(`距上次 [PROGRESS] 已 ${minutes} 分鐘，請用 ${cmdText(state.name, 'progress', '--percent <0-100> <內文>')} 回報進度。`);
         }
       }
       break;
     }
     case 'done':
-      list.push('你已發出 [DONE]：用 agentchat wait --until moderator 等主導者的下一步。');
+      list.push(`你已發出 [DONE]：用 ${waitText(state.name, room, 'moderator')} 等主導者的下一步。`);
       break;
     case 'stopped':
-      list.push('目前是 [STOP] 狀態：停下手上的動作，只用 agentchat wait --until moderator 等指示。');
+      list.push(`目前是 [STOP] 狀態：停下手上的動作，只用 ${waitText(state.name, room, 'moderator')} 等指示。`);
       break;
     case 'closed':
-      list.push('議題已 [CLOSE]：請 agentchat leave 後結束任務並向使用者報告。');
+      list.push(`議題已 [CLOSE]：請 ${cmdText(state.name, 'leave')} 後結束任務並向使用者報告。`);
       break;
     case 'idle':
-      list.push('已發過 [IDLE]：頻道長時間無人回應，請 agentchat leave 後結束任務並告知使用者。');
+      list.push(`已發過 [IDLE]：頻道長時間無人回應，請 ${cmdText(state.name, 'leave')} 後結束任務並告知使用者。`);
       break;
     case 'left':
       list.push(`${LEFT_TEXT}。`);
@@ -689,7 +700,7 @@ export function reminders(state, room, now = Date.now()) {
       break;
   }
   if (state.pendingQuestionId && !['closed', 'idle', 'left'].includes(state.phase)) {
-    list.push(`你的 [QUESTION]（id=${state.pendingQuestionId}）還沒得到回答：用 agentchat wait --until mention 等主導者。`);
+    list.push(`你的 [QUESTION]（id=${state.pendingQuestionId}）還沒得到回答：用 ${waitText(state.name, room, 'mention')} 等主導者。`);
   }
   return list;
 }

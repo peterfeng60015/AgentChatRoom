@@ -1,16 +1,15 @@
-import { ProtocolError, UserError } from '../errors.js';
+import { DiscordError, ProtocolError, UserError } from '../errors.js';
+import { buildStatus } from './status.js';
 import { applyEach, buildMessage, reminders, splitAgentName } from '../protocol.js';
 import { fmtTime, renderMessage, renderMessages, section } from '../render.js';
 import { appendLog, loadAgent, newAgent, recordOwnMessages, saveAgent } from '../state.js';
 import {
   agentName,
   ensureWebhook,
-  countUnread,
   normalizeAll,
   publicMessage,
   publicState,
   stateLines,
-  unreadLine,
 } from '../context.js';
 import { sendParts } from '../publish.js';
 
@@ -33,6 +32,23 @@ export const details = [
 ];
 
 const VENDORS = ['claude', 'gemini', 'codex', 'other'];
+const THREAD_TYPES = new Set([10, 11, 12]);
+
+async function checkChannel(client, room) {
+  let ch;
+  try {
+    ch = await client.channel(room.channelId);
+  } catch (e) {
+    if (e instanceof DiscordError && (e.status === 404 || e.status === 403)) {
+      throw new UserError(`讀不到頻道 ${room.channelId}：請檢查 room.json 的 channelId 與 bot 的頻道權限（agentchat doctor 可以逐項檢查）`);
+    }
+    throw e;
+  }
+  if (ch.guild_id !== room.guildId) {
+    throw new UserError(`頻道 ${room.channelId} 不屬於 room.guildId ${room.guildId}：請檢查 room.json（agentchat doctor 可以逐項檢查）`);
+  }
+  if (THREAD_TYPES.has(ch.type)) throw new UserError(`頻道 ${room.channelId} 是討論串，尚未支援討論串：room.json 的 channelId 請填一般文字頻道`);
+}
 const RECENT_LIMIT = 200;
 const CONFLICT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -97,30 +113,16 @@ export async function run(ctx) {
         `這個名稱在本機使用中：${name}（最後活動時間 ${last}，階段 ${existing.phase}）。新開的 session 請換名稱；確定要接手這個身分才加 --resume`,
       );
     }
-    let unread = null;
-    let unreadError = null;
-    try {
-      unread = await countUnread(ctx, existing);
-    } catch (e) {
-      unreadError = e.message;
-    }
-    const rem = reminders(existing, room);
-    const text = [
-      `重新連線：接手既有身分 ${name}，沒有發 [JOIN]`,
-      `房間：${room.roomName}（頻道 ${room.channelId}）`,
-      ...stateLines(existing, room),
-    ];
-    const u = unreadLine(unread);
-    if (u) text.push(u);
-    if (unreadError) text.push(`未讀：無法取得（${unreadError}）`);
-    const tail = section('下一步', rem);
-    if (tail) text.push(tail);
+    // 第一行固定，接著是和 status 相同的完整內容。
+    const status = await buildStatus(ctx, existing);
     return {
-      text,
-      data: { reconnected: true, room: { name: room.roomName, channelId: room.channelId }, state: publicState(existing, room), unread: unread?.count ?? null, unreadCapped: unread?.capped ?? null, reminders: rem },
+      text: [`重新連線：接手既有身分 ${name}，沒有發 [JOIN]`, ...status.text],
+      data: { reconnected: true, room: { name: room.roomName, channelId: room.channelId }, ...status.data, state: publicState(existing, room) },
     };
   }
 
+  // §6.3 join 第 1 步：先確認頻道（可讀、屬於 room.guildId、不是討論串），不通過就不建 webhook、不發 [JOIN]。
+  await checkChannel(client, room);
   const { webhook } = await ensureWebhook(client, room, { verify: true });
   const raws = await fetchRecent(client, room.channelId);
   const now = Date.now();
@@ -167,13 +169,17 @@ export async function run(ctx) {
   const content = buildMessage('JOIN', name, fields);
   const ids = await sendParts(ctx, state, [content]);
   recordOwnMessages(state, ids);
-  if (notes.length) state.lastNotes = notes;
+  if (notes.length) {
+    state.lastNotes = notes;
+    state.lastNotesAt = new Date().toISOString();
+  }
   saveAgent(state);
   appendLog(room.channelId, { dir: 'out', agent: name, tag: 'JOIN', ids, content });
 
   const rem = reminders(state, room);
   const text = [
     `已進房：${name} → 房間 ${room.roomName}（頻道 ${room.channelId}），已送出 [JOIN]（id=${ids[0]}）。`,
+    `語言：${room.language}`,
     ...stateLines(state, room),
   ];
   if (active) {

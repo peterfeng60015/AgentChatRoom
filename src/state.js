@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { OWN_MESSAGE_KEEP } from './protocol.js';
+import { fmtTime } from './render.js';
 import { ProtocolError, UserError } from './errors.js';
 
 // 每個 agent 的本機狀態（游標、角色、階段）都放這裡，不進 git。
@@ -91,7 +92,7 @@ export function acquireWaitLock(channelId, name) {
       continue; // 鎖剛好被放掉了。
     }
     if (pid !== process.pid && pidAlive(pid) && age < WAIT_LOCK_MAX_AGE_MS) {
-      throw new ProtocolError(`同名已有另一個 wait 在執行，先讀完它的輸出（pid ${pid}）`);
+      throw new ProtocolError(`同名已有另一個 wait 在執行（pid ${pid}，${fmtTime(Date.now() - age)} 開始），先讀完它的輸出`);
     }
     fs.rmSync(lock, { force: true });
   }
@@ -149,7 +150,7 @@ export function saveAgent(state) {
 export function updateAgent(channelId, name, mutate) {
   return withLock(agentFile(channelId, name), () => {
     const state = loadAgent(channelId, name);
-    if (!state) throw new UserError(`找不到 ${name} 的狀態檔，請先 agentchat join`);
+    if (!state) throw new UserError(`找不到 ${name} 的狀態檔，請先 agentchat join --as ${name} --vendor <claude|gemini|codex|other>`);
     const result = mutate(state);
     saveAgent(state);
     return result === undefined ? state : result;
@@ -193,6 +194,7 @@ export function newAgent({ name, vendor = null, model = null, channelId, cursor 
     workStartedAt: null,
     emptyWaitSince: null,
     lastNotes: [],
+    lastNotesAt: null,
     left: false,
   };
 }

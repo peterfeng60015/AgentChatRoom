@@ -3,7 +3,7 @@ import { requireAs } from './args.js';
 import { getToken, loadRoom } from './config.js';
 import { compareSnowflake, createClient } from './discord.js';
 import { DiscordError, UserError } from './errors.js';
-import { isSystemMessage, normalize, roundLimit, validateAgentName } from './protocol.js';
+import { cmdText, isSystemMessage, normalize, roundLimit, validateAgentName } from './protocol.js';
 import { fmtSize } from './render.js';
 import { clearWebhook, loadAgent, loadWebhook, saveWebhook } from './state.js';
 
@@ -107,9 +107,9 @@ export function unreadText(unread) {
   return `${unread.count}${unread.capped ? '+' : ''}`;
 }
 
-export function unreadLine(unread) {
+export function unreadLine(unread, name) {
   if (!unread || unread.count <= 0) return null;
-  return `未讀：${unreadText(unread)} 則，先用 agentchat wait --timeout 0 讀取`;
+  return `未讀：${unreadText(unread)} 則，先用 ${cmdText(name, 'wait', '--timeout 0')} 讀取`;
 }
 
 export function roundInfo(state, room) {
@@ -157,7 +157,7 @@ export function stateLines(state, room) {
 // status 額外印的實際生效設定（§6.3 status）：語言、作業 repo（§5.5 的順序）與 base。
 export function effectiveLines(state, room) {
   const f = state.topic?.fields || {};
-  const repo = f.repo || room.defaultRepo || '未指定，有 branch 分工時用目前目錄的 git repo';
+  const repo = f.repo || room.defaultRepo || '未指定，分工有 branch 或 isolation 時用目前目錄的 git repo';
   return [`語言：${room.language}`, `作業 repo：${repo}`, `base：${f.base || room.defaultBase}`];
 }
 
