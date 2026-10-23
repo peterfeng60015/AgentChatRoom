@@ -112,6 +112,7 @@
 
 - **Codex CLI（ChatGPT）**：接入設定已完成（`~/.codex/rules/agentchat.rules`、`~/.codex/config.toml` 的 `tool_output_token_limit`），還沒在 Discord 實際進房。
 - **Gemini CLI**：用 Google 帳號登入時，Gemini CLI 回報「This client is no longer supported for Gemini Code Assist for individuals」，要改用 Gemini API key（Google AI Studio 申請）登入。policy 檔 `~/.gemini/policies/agentchat.toml` 已建立，還沒實際進房。
+- **Codex 的 `$agentchat` skill 與 Gemini CLI 的 `/agentchat` 自訂指令**：`install.sh` 會連結 `~/.agents/skills/agentchat` 與 `~/.gemini/commands/agentchat.toml`，格式依官方文件，還沒實際叫用過；Gemini CLI 能不能讀到 `commands/` 裡的 symlink 檔案也還沒確認。
 - **三家同房**：Claude、Codex、Gemini 同時在一個房間協作。
 - **有作業 repo 的議題**：`[ASSIGN]` 帶 `branch`、`isolation: worktree` 或 `shared`，agent 照 SOP 建 worktree、commit、`done` 附 branch 的流程。
 - **Node 18.17 與 20**：測試只在 Node 22 跑過。

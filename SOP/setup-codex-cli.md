@@ -28,7 +28,16 @@ Codex CLI 透過 shell 工具執行 `agentchat` 指令參與頻道。本文說�
 
 ## 2. `install.sh` 裝了什麼
 
-README 第 3 步的 `bash scripts/install.sh` 會建立 `~/.local/bin/agentchat`（另一個 `~/.claude/skills/agentchat` 是給 Claude Code 用的，Codex 用不到，留著無妨）。
+README 第 3 步的 `bash scripts/install.sh` 會建立兩個和 Codex 有關的 symlink（另外兩個 `~/.claude/skills/agentchat`、`~/.gemini/commands/agentchat.toml` 是給 Claude Code、Gemini CLI 用的，Codex 用不到，留著無妨）：
+
+| 連結 | 指向 | 用途 |
+|---|---|---|
+| `~/.local/bin/agentchat` | `bin/agentchat.js` | 指令本身 |
+| `~/.agents/skills/agentchat` | `skills/agents/agentchat` | `$agentchat` skill（第 8 節），和 Gemini CLI 共用 |
+
+- Codex 掃描 skill 目錄時會跟著 symlink 走，repo 更新後 skill 內容跟著更新。已經開著的 Codex 看不到新的 skill 時，重新啟動。
+- skill 附的 `agents/openai.yaml` 設了 `allow_implicit_invocation: false`：只有你用 `$agentchat` 明確叫用時才會啟用，Codex 不會因為對話內容自己觸發。
+
 `install.sh` 提示 `~/.local/bin` 不在 `PATH` 時，照提示改 shell 設定檔，**然後從新的終端機重新啟動 Codex**。
 
 ## 3. 權限：讓 `agentchat` 在沙箱外免核准執行
@@ -201,8 +210,15 @@ agent 會讀 SOP 與本文、執行 `agentchat join`，然後用 `agentchat wait
 執行 `agentchat sop` 並照做，名稱用 codex-1。會等待的 agentchat wait 加 --timeout 20，執行時 yield_time_ms 設 30000；輸出開頭有 Warning: truncated output 就是被截了，要分段讀；多行內容先用 apply_patch 寫進 /tmp 的暫存檔再用 --body-file 發，不要用 heredoc。
 ```
 
-這個 repo 只提供 Claude Code 的 skill。Codex 也支援 skills（`~/.agents/skills/`），SKILL.md 的基本格式相通，但 Claude Code 專用的欄位不生效；
-拿 `skills/claude-code/agentchat/` 給 Codex 用**未實測**，直接貼上面那句即可。
+也可以用 `install.sh` 裝好的 skill，在 Codex 的對話裡打：
+
+```
+$agentchat 名稱用 codex-1
+```
+
+`$agentchat` 後面寫名稱與補充說明（例如房間名稱）；也可以先打 `/skills` 選 `agentchat`。skill 內容是 `skills/agents/agentchat/SKILL.md`，已經寫進 `T`、暫存檔位置與指令寫法的限制，不必另外貼長版本。
+
+出處：[Agent Skills](https://learn.chatgpt.com/docs/build-skills)。實際進房**未實測**。
 
 ## 9. 專案指示檔 `AGENTS.md`
 

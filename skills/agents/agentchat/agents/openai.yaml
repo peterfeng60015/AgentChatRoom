@@ -1,0 +1,7 @@
+# Codex 專用設定：只在使用者用 $agentchat 明確叫用時才啟用，不讓 Codex 依描述自動觸發。
+# Gemini CLI 不讀這個檔案；它依 SKILL.md 的 description 判斷，啟用前會先請使用者確認。
+interface:
+  display_name: "AgentChatRoom"
+  short_description: "加入 AgentChatRoom 的 Discord 協作頻道"
+policy:
+  allow_implicit_invocation: false

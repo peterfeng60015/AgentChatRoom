@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# agentchat 本機安裝腳本：建立 agentchat 指令與 Claude Code /agentchat skill 的 symlink。
+# agentchat 本機安裝腳本：建立 agentchat 指令，以及 Claude Code、Codex CLI、Gemini CLI 的 /agentchat skill 與指令的 symlink。
 #
 # 用法：bash scripts/install.sh [--dry-run] [--uninstall]
 #
@@ -26,7 +26,7 @@ usage() {
   cat <<'EOF'
 用法：bash scripts/install.sh [--dry-run] [--uninstall]
 
-  （不帶選項）  安裝或更新 agentchat 指令與 Claude Code skill 的 symlink，可重複執行
+  （不帶選項）  安裝或更新 agentchat 指令與各家 CLI 的 skill、指令的 symlink，可重複執行
   --dry-run     只印出會做什麼，不改任何檔案
   --uninstall   移除本 repo 建立的 symlink
   -h, --help    顯示這段說明
@@ -118,6 +118,12 @@ BIN_DIR="$HOME_DIR/.local/bin"
 BIN_DST="$BIN_DIR/agentchat"
 SKILL_PARENT="$HOME_DIR/.claude/skills"
 SKILL_DST="$SKILL_PARENT/agentchat"
+# Codex CLI 與 Gemini CLI 共用的 skill：兩家都讀 ~/.agents/skills/（Gemini CLI 把它當 ~/.gemini/skills/ 的別名，而且優先）。
+AGENTS_SKILL_SRC="$REPO_DIR/skills/agents/agentchat"
+AGENTS_SKILL_DST="$HOME_DIR/.agents/skills/agentchat"
+# Gemini CLI 的 /agentchat 自訂指令。
+GEMINI_CMD_SRC="$REPO_DIR/skills/gemini-cli/agentchat.toml"
+GEMINI_CMD_DST="$HOME_DIR/.gemini/commands/agentchat.toml"
 STATE_DIR_LABEL="${AGENTCHAT_STATE_DIR:-~/.agentchat}"
 
 # ---------- 共用函式 ----------
@@ -198,12 +204,16 @@ uninstall_link() {
 if [ "$UNINSTALL" -eq 1 ]; then
   check_uninstall "$BIN_DST" "$BIN_SRC"
   check_uninstall "$SKILL_DST" "$SKILL_SRC"
+  check_uninstall "$AGENTS_SKILL_DST" "$AGENTS_SKILL_SRC"
+  check_uninstall "$GEMINI_CMD_DST" "$GEMINI_CMD_SRC"
   if [ "$UNINSTALL_ERRORS" -gt 0 ]; then
     fail "有 ${UNINSTALL_ERRORS} 個問題，沒有做任何變更。"
     exit 1
   fi
   uninstall_link "$BIN_DST" "$BIN_SRC"
   uninstall_link "$SKILL_DST" "$SKILL_SRC"
+  uninstall_link "$AGENTS_SKILL_DST" "$AGENTS_SKILL_SRC"
+  uninstall_link "$GEMINI_CMD_DST" "$GEMINI_CMD_SRC"
   say ""
   say "沒有動到：${REPO_DIR}/.env（如果有）與本機狀態目錄 ${STATE_DIR_LABEL}（含 webhook 快取）。不再需要時請自行刪除。"
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -244,10 +254,12 @@ if [ ! -f "$BIN_SRC" ]; then
   fail "找不到 ${BIN_SRC}，確認 repo 是完整的 clone。"
   errors=$((errors + 1))
 fi
-if [ ! -f "$SKILL_SRC/SKILL.md" ]; then
-  fail "找不到 ${SKILL_SRC}/SKILL.md，確認 repo 是完整的 clone。"
-  errors=$((errors + 1))
-fi
+for required in "$SKILL_SRC/SKILL.md" "$AGENTS_SKILL_SRC/SKILL.md" "$GEMINI_CMD_SRC"; do
+  if [ ! -f "$required" ]; then
+    fail "找不到 ${required}，確認 repo 是完整的 clone。"
+    errors=$((errors + 1))
+  fi
+done
 
 # 目標若已存在且不是 symlink，可能是使用者自己的檔案或另一份安裝，不覆蓋。
 # 需要建立或取代連結時，所在目錄（還不存在就往上找第一個已存在的祖先）必須是可寫的目錄。
@@ -282,6 +294,8 @@ check_target() {
 }
 check_target "$BIN_DST" "$BIN_SRC"
 check_target "$SKILL_DST" "$SKILL_SRC"
+check_target "$AGENTS_SKILL_DST" "$AGENTS_SKILL_SRC"
+check_target "$GEMINI_CMD_DST" "$GEMINI_CMD_SRC"
 
 if [ "$errors" -gt 0 ]; then
   fail "有 ${errors} 個問題，沒有做任何變更。"
@@ -329,6 +343,8 @@ install_link() {
 
 install_link "$BIN_SRC" "$BIN_DST" "/bin/agentchat.js"
 install_link "$SKILL_SRC" "$SKILL_DST" "/skills/claude-code/agentchat"
+install_link "$AGENTS_SKILL_SRC" "$AGENTS_SKILL_DST" "/skills/agents/agentchat"
+install_link "$GEMINI_CMD_SRC" "$GEMINI_CMD_DST" "/skills/gemini-cli/agentchat.toml"
 
 # Claude Code 的設定目錄可以用 CLAUDE_CONFIG_DIR 改到別處，那時它不會讀 ~/.claude/skills。
 if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && ! same_dir "${CLAUDE_CONFIG_DIR%/}" "$HOME_DIR/.claude"; then

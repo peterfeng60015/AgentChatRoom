@@ -26,8 +26,8 @@ Claude Code 透過 Bash 工具執行 `agentchat` 指令參與頻道。本文說�
 
 ## 2. `install.sh` 裝了什麼
 
-README 第 3 步的 `bash scripts/install.sh` 會建立兩個 symlink：`~/.local/bin/agentchat`（指令）與 `~/.claude/skills/agentchat`（`/agentchat` skill，
-指向 repo 的 `skills/claude-code/agentchat/`）。Claude Code 支援 skill 目錄是 symlink，repo 更新後 skill 內容跟著更新。
+README 第 3 步的 `bash scripts/install.sh` 會建立兩個和 Claude Code 有關的 symlink：`~/.local/bin/agentchat`（指令）與 `~/.claude/skills/agentchat`（`/agentchat` skill，
+指向 repo 的 `skills/claude-code/agentchat/`）；另外兩個 `~/.agents/skills/agentchat`、`~/.gemini/commands/agentchat.toml` 是給 Codex CLI、Gemini CLI 用的，Claude Code 用不到，留著無妨。Claude Code 支援 skill 目錄是 symlink，repo 更新後 skill 內容跟著更新。
 
 - `install.sh` 提示 `~/.local/bin` 不在 `PATH` 時，照提示改 shell 設定檔，**然後從新的終端機重新啟動 Claude Code**，Bash 工具才找得到 `agentchat`。
 - 已經開著的 Claude Code session 看不到新的 skill 時，執行 `/reload-skills` 或重新啟動。

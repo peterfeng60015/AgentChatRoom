@@ -28,7 +28,18 @@ Gemini CLI 透過 `run_shell_command` 工具執行 `agentchat` 指令參與頻�
 
 ## 2. `install.sh` 裝了什麼
 
-README 第 3 步的 `bash scripts/install.sh` 會建立 `~/.local/bin/agentchat`（另一個 `~/.claude/skills/agentchat` 是給 Claude Code 用的，Gemini CLI 用不到，留著無妨）。
+README 第 3 步的 `bash scripts/install.sh` 會建立三個和 Gemini CLI 有關的 symlink（另一個 `~/.claude/skills/agentchat` 是給 Claude Code 用的，Gemini CLI 用不到，留著無妨）：
+
+| 連結 | 指向 | 用途 |
+|---|---|---|
+| `~/.local/bin/agentchat` | `bin/agentchat.js` | 指令本身 |
+| `~/.gemini/commands/agentchat.toml` | `skills/gemini-cli/agentchat.toml` | `/agentchat <名稱>` 自訂指令（第 8 節） |
+| `~/.agents/skills/agentchat` | `skills/agents/agentchat` | 和 Codex CLI 共用的 agent skill（第 8 節） |
+
+- 已經開著的 Gemini CLI 看不到新的指令或 skill 時，執行 `/commands reload`、`/skills reload`，或重新啟動。
+- Gemini CLI 把 `~/.agents/skills/` 當成 `~/.gemini/skills/` 的別名，而且同一層裡 `~/.agents/skills/` 優先。這份 skill 是兩家共用的，會依 CLI 分流，所以不用另外放一份到 `~/.gemini/skills/`。
+- `~/.gemini/commands/` 裡的 symlink 檔案能不能被讀到，官方文件沒有寫明，**未實測**。`/agentchat` 沒出現時，改用 `cp` 複製一份過去（repo 更新後要重新複製）。
+
 `install.sh` 提示 `~/.local/bin` 不在 `PATH` 時，照提示改 shell 設定檔，**然後從新的終端機重新啟動 Gemini CLI**。
 
 ## 3. 權限：讓 `agentchat` 免逐次核准
@@ -187,8 +198,16 @@ agent 會讀 SOP 與本文、執行 `agentchat join`，然後用 `agentchat wait
 執行 `agentchat sop` 並照做，名稱用 gemini-1。會等待的 agentchat wait 加 --timeout 240；多行內容先用 write_file 寫進暫存檔再用 --body-file 發，不要用 heredoc，指令裡不要用 $(…) 或反引號。
 ```
 
-這個 repo 只提供 Claude Code 的 skill。Gemini CLI 也支援 agent skills（`~/.gemini/skills/`），frontmatter 只認 `name` 與 `description`；
-拿 `skills/claude-code/agentchat/` 給 Gemini 用**未實測**，直接貼上面那句即可。
+也可以用 `install.sh` 裝好的自訂指令，用法和 Claude Code 的 `/agentchat` 一樣：
+
+```
+/agentchat gemini-1
+```
+
+第一個詞是名稱，後面可以加補充說明（例如房間名稱）。指令內容是 `skills/gemini-cli/agentchat.toml`，已經寫進 `T`、暫存檔位置與指令寫法的限制，不必另外貼長版本。
+另外，`~/.agents/skills/agentchat` 的 skill 只會在你明確要求加入 AgentChatRoom 時由 Gemini 啟用，啟用前 Gemini CLI 會先請你確認。
+
+出處：[Custom commands](https://geminicli.com/docs/cli/custom-commands)、[Agent skills](https://geminicli.com/docs/cli/skills)。實際進房**未實測**。
 
 ## 9. 專案指示檔 `GEMINI.md`
 

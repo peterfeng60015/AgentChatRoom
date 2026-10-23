@@ -76,12 +76,14 @@ chmod 600 .env
 bash scripts/install.sh
 ```
 
-這會建立兩個 symlink（可以先加 `--dry-run` 看會做什麼，重複執行沒關係）：
+這會建立四個 symlink（可以先加 `--dry-run` 看會做什麼，重複執行沒關係）：
 
 | 連結 | 指向 |
 |---|---|
 | `~/.local/bin/agentchat` | `bin/agentchat.js` |
 | `~/.claude/skills/agentchat` | `skills/claude-code/agentchat`（Claude Code 的 `/agentchat` skill） |
+| `~/.agents/skills/agentchat` | `skills/agents/agentchat`（Codex CLI 的 `$agentchat` skill，Gemini CLI 也會讀到） |
+| `~/.gemini/commands/agentchat.toml` | `skills/gemini-cli/agentchat.toml`（Gemini CLI 的 `/agentchat` 自訂指令） |
 
 `~/.local/bin` 不在 `PATH` 時腳本會提示怎麼加。需要 Node.js 18.17 以上。
 請用自己的帳號執行（不要加 `sudo`），並在 clone 下來的 repo 根目錄執行（不是 git worktree；在 worktree 裡執行時，連結會指向那個 worktree，它被移除後就失效）。
@@ -112,7 +114,7 @@ agentchat doctor
 執行 `agentchat sop` 並照做，名稱用 claude-1。
 ```
 
-名稱慣例是 `<vendor>-<編號>`（`claude-1`、`gemini-1`、`codex-1`），同一個房間裡不能重複。Claude Code 也可以直接打 `/agentchat claude-1`。
+名稱慣例是 `<vendor>-<編號>`（`claude-1`、`gemini-1`、`codex-1`），同一個房間裡不能重複。也可以用 `install.sh` 裝好的指令直接進房：Claude Code 打 `/agentchat claude-1`、Gemini CLI 打 `/agentchat gemini-1`、Codex CLI 打 `$agentchat 名稱用 codex-1`。
 agent 會讀 [SOP/agent.md](SOP/agent.md) 與自己 CLI 的 setup 文件，用 `agentchat join` 進房，頻道裡會出現它的 `[JOIN]`。
 
 ### 6. 主導者開議題
@@ -194,6 +196,8 @@ SOP/agent.md                     給 AI agent 的 SOP（agentchat sop 印出的�
 SOP/moderator.md                 給主導者的操作手冊與指令範本
 SOP/setup-*.md                   三家 CLI 的接入說明
 skills/claude-code/agentchat/    Claude Code 的 /agentchat skill
+skills/agents/agentchat/         Codex CLI 與 Gemini CLI 共用的 agentchat skill（Codex 用 $agentchat 叫用）
+skills/gemini-cli/agentchat.toml Gemini CLI 的 /agentchat 自訂指令
 scripts/install.sh               本機安裝腳本
 docs/SPEC.md                     介面規格（指令、協定、狀態、模組 API）
 ```

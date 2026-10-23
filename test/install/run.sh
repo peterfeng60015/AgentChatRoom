@@ -39,11 +39,13 @@ new_env() {
   mkdir -p "$T/case"
   R="$T/case/my repo"
   H="$T/case/home dir"
-  mkdir -p "$R/scripts" "$R/bin" "$R/skills/claude-code/agentchat" "$R/config" "$H"
+  mkdir -p "$R/scripts" "$R/bin" "$R/skills/claude-code/agentchat" "$R/skills/agents/agentchat" "$R/skills/gemini-cli" "$R/config" "$H"
   cp "$SRC_SCRIPT" "$R/scripts/install.sh"
   printf '#!/usr/bin/env node\nconsole.log("fake agentchat ok")\n' > "$R/bin/agentchat.js"
   chmod 644 "$R/bin/agentchat.js"
   printf -- '---\nname: agentchat\ndescription: test\n---\n' > "$R/skills/claude-code/agentchat/SKILL.md"
+  printf -- '---\nname: agentchat\ndescription: test\n---\n' > "$R/skills/agents/agentchat/SKILL.md"
+  printf 'prompt = "test {{args}}"\n' > "$R/skills/gemini-cli/agentchat.toml"
   printf 'DISCORD_BOT_TOKEN=\n' > "$R/.env.example"
   printf '{}\n' > "$R/config/room.json"
 }
@@ -81,6 +83,10 @@ check "PATH 警告與修正方法" has 'export PATH="$HOME/.local/bin:$PATH"'
 check "下一步提到 cp .env.example" has "cp \"$R/.env.example\" \"$R/.env\""
 check "PATH 沒設好時下一步提醒開新終端機" has "開新的終端機後執行 agentchat doctor"
 check "skill 透過連結讀得到 SKILL.md" [ -f "$H/.claude/skills/agentchat/SKILL.md" ]
+check "Codex／Gemini 共用 skill 連結指向 repo" link_is "$H/.agents/skills/agentchat" "$R/skills/agents/agentchat"
+check "共用 skill 透過連結讀得到 SKILL.md" [ -f "$H/.agents/skills/agentchat/SKILL.md" ]
+check "Gemini 指令連結指向 repo" link_is "$H/.gemini/commands/agentchat.toml" "$R/skills/gemini-cli/agentchat.toml"
+check "Gemini 指令透過連結讀得到內容" grep -qF '{{args}}' "$H/.gemini/commands/agentchat.toml"
 check "動作是做完才印" has "[連結] $H/.local/bin/agentchat -> $R/bin/agentchat.js"
 
 echo "== 3. 重複安裝（PATH 已含 ~/.local/bin、已有 .env）"
@@ -194,7 +200,11 @@ run_inst --uninstall
 check "uninstall 結束碼 0" [ "$RC" -eq 0 ]
 check "agentchat 連結已刪" [ ! -L "$H/.local/bin/agentchat" ]
 check "skill 連結已刪" [ ! -L "$H/.claude/skills/agentchat" ]
+check "共用 skill 連結已刪" [ ! -L "$H/.agents/skills/agentchat" ]
+check "Gemini 指令連結已刪" [ ! -L "$H/.gemini/commands/agentchat.toml" ]
 check "repo 的 skill 目錄還在" [ -f "$R/skills/claude-code/agentchat/SKILL.md" ]
+check "repo 的共用 skill 還在" [ -f "$R/skills/agents/agentchat/SKILL.md" ]
+check "repo 的 Gemini 指令還在" [ -f "$R/skills/gemini-cli/agentchat.toml" ]
 check "父目錄保留" [ -d "$H/.local/bin" ]
 check "提到本機狀態目錄預設位置" has "本機狀態目錄 ~/.agentchat"
 run_inst --uninstall
@@ -296,6 +306,16 @@ rm "$R/bin/agentchat.js"; before="$(tree_snapshot)"; run_inst
 check "缺 bin/agentchat.js → 結束碼 1" [ "$RC" -eq 1 ]
 check "說明找不到" has "找不到 $R/bin/agentchat.js，確認 repo 是完整的 clone"
 check "缺檔時沒有做任何變更" [ "$before" = "$(tree_snapshot)" ]
+new_env; rm "$R/skills/agents/agentchat/SKILL.md"; before="$(tree_snapshot)"; run_inst
+check "缺共用 skill → 結束碼 1" [ "$RC" -eq 1 ]
+check "說明找不到共用 skill" has "找不到 $R/skills/agents/agentchat/SKILL.md，確認 repo 是完整的 clone"
+check "缺共用 skill 時沒有做任何變更" [ "$before" = "$(tree_snapshot)" ]
+new_env; mkdir -p "$H/.gemini/commands"; echo 'prompt = "mine"' > "$H/.gemini/commands/agentchat.toml"
+before="$(tree_snapshot)"; run_inst
+check "已有自己的 Gemini 指令檔 → 結束碼 1" [ "$RC" -eq 1 ]
+check "說明不覆蓋一般檔案" has "$H/.gemini/commands/agentchat.toml 已存在而且是一般檔案（不是 symlink），不覆蓋"
+check "使用者的 Gemini 指令檔沒被改" grep -qF 'mine' "$H/.gemini/commands/agentchat.toml"
+check "沒有只裝一半" [ "$before" = "$(tree_snapshot)" ]
 OUT="$(cd / && env -u HOME PATH="$BASE_PATH" LC_ALL="$LOC" bash "$R/scripts/install.sh" 2>&1)"; RC=$?
 check "HOME 未設定 → 結束碼 2" [ "$RC" -eq 2 ]
 OUT="$(cd / && HOME="relative/home" PATH="$BASE_PATH" LC_ALL="$LOC" bash "$R/scripts/install.sh" 2>&1)"; RC=$?

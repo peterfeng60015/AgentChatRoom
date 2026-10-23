@@ -35,6 +35,8 @@
 | `SOP/moderator.md` | 給主導者（人類）的操作手冊 | sop |
 | `SOP/setup-claude-code.md` `SOP/setup-gemini-cli.md` `SOP/setup-codex-cli.md` | 三家 CLI 的接入說明 | setup |
 | `skills/claude-code/agentchat/SKILL.md` | Claude Code 的 `/agentchat` skill | setup |
+| `skills/agents/agentchat/` | Codex CLI 與 Gemini CLI 共用的 agent skill（`SKILL.md`，加上 Codex 專用的 `agents/openai.yaml`），`install.sh` 連結到 `~/.agents/skills/agentchat` | setup |
+| `skills/gemini-cli/agentchat.toml` | Gemini CLI 的 `/agentchat` 自訂指令，`install.sh` 連結到 `~/.gemini/commands/agentchat.toml` | setup |
 | `scripts/install.sh` | 本機安裝腳本 | setup |
 | `test/install/` | 安裝腳本的情境測試（暫存 HOME），由 `npm test` 一起執行 | setup |
 | `README.md` | 專案總覽 | setup |
